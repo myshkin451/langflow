@@ -47,13 +47,13 @@ describe("buildWorkflowRunRequest", () => {
     expect(body).not.toHaveProperty("session_id");
   });
 
-  it("honors an explicit mode and stream_protocol", () => {
+  it('forwards an explicit mode="stream" and pins stream_protocol', () => {
     const body = buildWorkflowRunRequest({
       flowId: "flow-1",
-      mode: "background",
+      mode: "stream",
     });
 
-    expect(body.mode).toBe("background");
+    expect(body.mode).toBe("stream");
     expect(body.stream_protocol).toBe("agui");
   });
 
@@ -74,6 +74,18 @@ describe("buildWorkflowRunRequest", () => {
       data: { nodes: [{ id: "n1" }], edges: [] },
       files: ["a.txt"],
     });
+  });
+
+  it('rejects mode="sync" because the SSE decoder can\'t read a JSON response', () => {
+    expect(() =>
+      buildWorkflowRunRequest({ flowId: "flow-1", mode: "sync" }),
+    ).toThrow(/only supports mode="stream"/);
+  });
+
+  it('rejects mode="background" because the response is a job JSON, not SSE', () => {
+    expect(() =>
+      buildWorkflowRunRequest({ flowId: "flow-1", mode: "background" }),
+    ).toThrow(/only supports mode="stream"/);
   });
 
   it("omits optional native fields when the caller did not set them", () => {

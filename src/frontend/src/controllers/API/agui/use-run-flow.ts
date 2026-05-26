@@ -9,7 +9,7 @@
  */
 
 import { type BaseEvent } from "@ag-ui/client";
-import { useCallback, useRef, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { Subscription } from "rxjs";
 import {
   buildWorkflowRunRequest,
@@ -120,6 +120,20 @@ export function useRunFlow(agentOptions: UseRunFlowAgentOptions = {}) {
     resolveRef.current?.();
     resolveRef.current = null;
   }, []);
+
+  // If the host component unmounts mid-run, tear down the SSE fetch and
+  // settle any pending ``run()`` Promise. Without this, ``abortRun`` is
+  // never called and the fetch keeps streaming server-side; the RxJS
+  // subscriber would also call ``setState`` on an unmounted component.
+  useEffect(
+    () => () => {
+      subRef.current?.unsubscribe();
+      agentRef.current?.abortRun();
+      resolveRef.current?.();
+      resolveRef.current = null;
+    },
+    [],
+  );
 
   return { ...state, run, abort };
 }

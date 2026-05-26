@@ -144,6 +144,45 @@ describe("useRunFlow concurrency", () => {
     }
   });
 
+  it("aborts the in-flight fetch when the host component unmounts", async () => {
+    /**
+     * Without a useEffect cleanup, a consumer that starts a run and unmounts
+     * without calling ``abort`` leaks the SSE fetch and risks setState on an
+     * unmounted component when the next chunk lands.
+     */
+    const { signals, fetchImpl } = makeHangingFetch();
+    const fetchSpy = jest
+      .spyOn(global as { fetch: typeof fetch }, "fetch")
+      .mockImplementation(fetchImpl as unknown as typeof fetch);
+
+    try {
+      const { result, unmount } = renderHook(() => useRunFlow());
+
+      let runResolved = false;
+      let runPromise: Promise<void> = Promise.resolve();
+      await act(async () => {
+        runPromise = result.current
+          .run({
+            flowId: "67ccd2be-17f0-8190-81ff-3bb2cf6508e6",
+            message: "hang",
+          })
+          .then(() => {
+            runResolved = true;
+          });
+        await Promise.resolve();
+      });
+      expect(signals[0].aborted).toBe(false);
+
+      unmount();
+      await runPromise;
+
+      expect(signals[0].aborted).toBe(true);
+      expect(runResolved).toBe(true);
+    } finally {
+      fetchSpy.mockRestore();
+    }
+  });
+
   it("settles the previous run Promise when a new run preempts it", async () => {
     const { fetchImpl } = makeHangingFetch();
     const fetchSpy = jest

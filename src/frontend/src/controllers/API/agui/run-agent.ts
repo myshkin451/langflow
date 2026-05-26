@@ -77,10 +77,24 @@ export interface WorkflowRunRequestBody {
 export function buildWorkflowRunRequest(
   opts: WorkflowRunOptions,
 ): WorkflowRunRequestBody {
+  const mode = opts.mode ?? "stream";
+  // ``createWorkflowAgent`` always patches ``Accept: text/event-stream`` and
+  // ``HttpAgent.run`` decodes the response as SSE. ``mode=sync`` returns
+  // ``application/json`` and ``mode=background`` returns a job JSON, so
+  // either of those modes through this builder would mis-decode at runtime.
+  // The only in-tree caller (``runFlowAGUI``) sends ``stream``; this guard
+  // catches accidental misuse early instead of silently producing a broken
+  // run. Sync / background callers should go through a JSON fetch path.
+  if (mode !== "stream") {
+    throw new Error(
+      `createWorkflowAgent only supports mode="stream"; got "${mode}". ` +
+        `Use a JSON fetch against ${WORKFLOWS_ENDPOINT} for sync / background.`,
+    );
+  }
   const body: WorkflowRunRequestBody = {
     flow_id: opts.flowId,
     input_value: opts.message ?? "",
-    mode: opts.mode ?? "stream",
+    mode,
     stream_protocol: "agui",
   };
   if (opts.threadId) body.session_id = opts.threadId;
