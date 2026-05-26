@@ -63,18 +63,24 @@ export function applyAGUIStateEvent(
 ): CanvasState {
   if (event.type === EventType.STATE_SNAPSHOT) {
     const snapshot = (event as unknown as { snapshot: unknown }).snapshot;
+    const nodes = (snapshot as { nodes?: unknown } | null)?.nodes;
     if (
       snapshot &&
       typeof snapshot === "object" &&
-      "nodes" in (snapshot as Record<string, unknown>) &&
-      typeof (snapshot as { nodes: unknown }).nodes === "object"
+      nodes !== null &&
+      typeof nodes === "object" &&
+      !Array.isArray(nodes)
     ) {
       return snapshot as CanvasState;
     }
     return state;
   }
   if (event.type === EventType.STATE_DELTA) {
-    const ops = (event as unknown as { delta: JsonPatchOp[] }).delta ?? [];
+    // ``delta`` should be a JSON-Patch array but malformed payloads could send
+    // null, an object, or a string. Anything that isn't an array is a no-op
+    // — calling ``reduce`` on it would crash the run.
+    const raw = (event as unknown as { delta?: unknown }).delta;
+    const ops = Array.isArray(raw) ? (raw as JsonPatchOp[]) : [];
     return ops.reduce(applyOp, state);
   }
   return state;

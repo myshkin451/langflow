@@ -117,7 +117,12 @@ class AGUITranslator:
         token boundary) is dropped: re-opening it would emit a second
         ``TEXT_MESSAGE_START`` for an id the protocol considers closed.
         """
-        message_id = str(data.get("id", ""))
+        message_id = str(data.get("id") or "")
+        if not message_id:
+            # Without a stable id the AG-UI lifecycle (START/CONTENT/END) cannot
+            # be correlated. Dropping the event is preferable to emitting a
+            # malformed stream with empty message_ids.
+            return []
         if message_id in self._emitted_text_message_ids and self._open_message_id != message_id:
             return []
         chunk = data.get("chunk", "")
@@ -200,7 +205,10 @@ class AGUITranslator:
             events.extend(self._close_open_message())
         else:
             text = data.get("text") or ""
-            if text and message_id not in self._emitted_text_message_ids:
+            # Skip text-message lifecycle emission without a stable message_id;
+            # tool-call events above are namespaced by block/content index so
+            # they can still ride a missing id, but TEXT_MESSAGE_* cannot.
+            if text and message_id and message_id not in self._emitted_text_message_ids:
                 self._emitted_text_message_ids.add(message_id)
                 events.append(TextMessageStartEvent(message_id=message_id, role="assistant"))
                 events.append(TextMessageContentEvent(message_id=message_id, delta=text))

@@ -517,7 +517,10 @@ async def _stream_event_frames(
     playground's chat-view. A follow-up retires this once chat-view
     consumes the AG-UI ``TEXT_MESSAGE_*`` lifecycle directly.
     """
-    queue: asyncio.Queue = asyncio.Queue()
+    # Bounded so a slow consumer can apply backpressure on the build loop
+    # instead of growing without bound. The build loop awaits ``queue.put``
+    # which yields control back to the consumer between frames.
+    queue: asyncio.Queue = asyncio.Queue(maxsize=_EVENT_QUEUE_MAX_SIZE)
     event_manager = create_default_event_manager(queue)
     input_request = _single_input_value_request(parsed)
     flow_data = FlowDataRequest(**parsed.data) if parsed.data else None
@@ -667,17 +670,32 @@ class _BackgroundRun:
     already serialized in the protocol the original POST requested via
     ``stream_protocol``; re-attach replays them as-is. Mixing protocols
     across a single run is not supported.
+
+    Per-run frame count is bounded by ``_MAX_FRAMES_PER_BACKGROUND_RUN`` so a
+    long verbose run (token-by-token streams, repeated tool calls) cannot
+    exhaust process memory while ``_MAX_BACKGROUND_RUNS`` only caps the
+    number of buffers. When the cap is reached the oldest frames are
+    evicted; re-attach with ``Last-Event-ID`` past that point will start
+    from the new buffer head (replay loss is preferred over OOM).
     """
 
     def __init__(self, user_id: str) -> None:
         self.user_id = user_id
         self.frames: list[bytes] = []
+        # Index of the first frame still in ``frames`` (monotonic across the
+        # life of the buffer). Once eviction starts, ``frames[i]`` corresponds
+        # to logical event id ``base_index + i``.
+        self.base_index = 0
         self.done = False
         self._cond = asyncio.Condition()
 
     async def append(self, frame: bytes) -> None:
         async with self._cond:
             self.frames.append(frame)
+            overflow = len(self.frames) - _MAX_FRAMES_PER_BACKGROUND_RUN
+            if overflow > 0:
+                del self.frames[:overflow]
+                self.base_index += overflow
             self._cond.notify_all()
 
     async def finish(self) -> None:
@@ -686,25 +704,69 @@ class _BackgroundRun:
             self._cond.notify_all()
 
     async def replay(self, start_index: int) -> AsyncIterator[bytes]:
-        """Yield buffered frames from ``start_index`` and tail until done."""
+        """Yield buffered frames from ``start_index`` and tail until done.
+
+        ``start_index`` is in logical event-id space (matches what was emitted
+        on ``id:`` lines). If the caller's ``Last-Event-ID`` points before the
+        buffer's current head (frames evicted under memory pressure), we
+        replay from the head and the caller observes a gap.
+        """
         idx = max(start_index, 0)
         while True:
             async with self._cond:
-                while idx >= len(self.frames) and not self.done:
+                head = self.base_index
+                tail = head + len(self.frames)
+                idx = max(idx, head)
+                while idx >= tail and not self.done:
                     await self._cond.wait()
-                snapshot = self.frames[idx:]
+                    head = self.base_index
+                    tail = head + len(self.frames)
+                    idx = max(idx, head)
+                snapshot = self.frames[idx - head :]
                 finished = self.done
             for frame in snapshot:
                 yield frame
             idx += len(snapshot)
-            if finished and idx >= len(self.frames):
+            if finished and idx >= self.base_index + len(self.frames):
                 return
 
 
 # Process-local registry of background runs keyed by job_id, bounded by
 # ``_MAX_BACKGROUND_RUNS`` (oldest evicted first). Re-attach reads this.
 _MAX_BACKGROUND_RUNS = 100
+# Per-run frame ceiling. Caps memory for a single long/verbose run so a
+# token-streaming flow can't exhaust the process. 10k frames covers minutes
+# of dense token streams with room to spare; beyond that we evict oldest.
+_MAX_FRAMES_PER_BACKGROUND_RUN = 10_000
+# Inline stream queue between the build loop and the SSE consumer. Bounded
+# so a slow consumer applies backpressure to the build loop instead of
+# letting frames accumulate without bound when the network is slow.
+_EVENT_QUEUE_MAX_SIZE = 256
 _BACKGROUND_RUNS: dict[str, _BackgroundRun] = {}
+
+
+async def _finalize_job_status(job_uuid: UUID, terminal_status: JobStatus) -> None:
+    """Update job status to a terminal value, but never overwrite CANCELLED.
+
+    ``stop_workflow`` sets the job to CANCELLED. The buffer task runs in
+    parallel and reaches its ``finally`` block shortly after; if it
+    unconditionally wrote COMPLETED/FAILED it would race with the cancellation
+    and silently overwrite the user's stop intent. Re-read the row first and
+    skip the update if a cancellation already landed.
+    """
+    job_service = get_job_service()
+    try:
+        job = await job_service.get_job_by_job_id(job_id=job_uuid)
+    except Exception:  # noqa: BLE001
+        job = None
+    if job is not None and job.status == JobStatus.CANCELLED:
+        return
+    with contextlib.suppress(Exception):
+        await job_service.update_job_status(
+            job_uuid,
+            terminal_status,
+            finished_timestamp=True,
+        )
 
 
 async def _clear_background_run(job_id: str) -> None:
@@ -780,12 +842,7 @@ async def _buffer_background_run(
         # Fire-and-forget coroutine: do not raise, the route already returned.
         await bg_run.finish()
         job_uuid = UUID(job_id) if isinstance(job_id, str) else job_id
-        with contextlib.suppress(Exception):
-            await get_job_service().update_job_status(
-                job_uuid,
-                JobStatus.FAILED,
-                finished_timestamp=True,
-            )
+        await _finalize_job_status(job_uuid, JobStatus.FAILED)
         return
 
     terminal_error_type = adapter.terminal_error_type
@@ -816,12 +873,7 @@ async def _buffer_background_run(
         # ``update_job_status`` queries the Job table by its UUID primary key;
         # passing the raw string would silently miss every row.
         job_uuid = UUID(job_id) if isinstance(job_id, str) else job_id
-        with contextlib.suppress(Exception):
-            await get_job_service().update_job_status(
-                job_uuid,
-                JobStatus.FAILED if errored else JobStatus.COMPLETED,
-                finished_timestamp=True,
-            )
+        await _finalize_job_status(job_uuid, JobStatus.FAILED if errored else JobStatus.COMPLETED)
         # Fire memory-base auto-capture hook on successful runs only. Matches
         # the sync mode wiring above and the v1 build-pipeline wiring in
         # ``api/build.py``. ``fire_and_forget_task`` because we are already a
@@ -868,19 +920,29 @@ async def execute_workflow_background(
         bg_run = _BackgroundRun(user_id=str(current_user.id))
         _register_background_run(job_id_str, bg_run)
 
-        queue_service = get_queue_service()
-        queue_service.create_queue(job_id_str)
-        queue_service.start_job(
-            job_id_str,
-            _buffer_background_run(
-                bg_run=bg_run,
-                flow=flow,
-                parsed=parsed,
-                job_id=job_id_str,
-                current_user=current_user,
-                stream_protocol=stream_protocol,
-            ),
-        )
+        try:
+            queue_service = get_queue_service()
+            queue_service.create_queue(job_id_str)
+            queue_service.start_job(
+                job_id_str,
+                _buffer_background_run(
+                    bg_run=bg_run,
+                    flow=flow,
+                    parsed=parsed,
+                    job_id=job_id_str,
+                    current_user=current_user,
+                    stream_protocol=stream_protocol,
+                ),
+            )
+        except BaseException:
+            # If queue creation or scheduling fails after the bg_run is
+            # registered, the buffer would stay live with ``done=False`` and
+            # any re-attach client would block on ``_cond.wait()`` forever
+            # (the task that would call ``finish()`` was never scheduled).
+            # Clear the registry, mark the job FAILED, then re-raise.
+            await _clear_background_run(job_id_str)
+            await _finalize_job_status(job_id, JobStatus.FAILED)
+            raise
         return WorkflowJobResponse(job_id=job_id_str, flow_id=parsed.flow_id, status=JobStatus.QUEUED)
 
     except (WorkflowResourceError, WorkflowServiceUnavailableError, WorkflowQueueFullError):

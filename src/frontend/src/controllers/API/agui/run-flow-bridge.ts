@@ -126,6 +126,17 @@ export function applyStateDelta(
     flowStore.updateBuildStatus([nodeId], buildStatus);
     nodeIds.add(nodeId);
 
+    // Drive the canvas edge animation in step with build status so the AG-UI
+    // path matches the v1 build callbacks: edges from a node light up while
+    // it runs and stop when it finishes (either way). Without this only the
+    // bridge's final ``finish()`` clears edges, and they never animate during
+    // the run.
+    if (value.status === "running") {
+      flowStore.updateEdgesRunningByNodes([nodeId], true);
+    } else if (value.status === "success" || value.status === "error") {
+      flowStore.updateEdgesRunningByNodes([nodeId], false);
+    }
+
     // Only the final per-vertex emission carries the result data; running
     // states have ``output: null`` and contribute no flow-pool entry.
     if (value.output) {
@@ -149,12 +160,35 @@ export function applyStateDelta(
 
 /**
  * Run a workflow through the AG-UI service and update flowStore as events
- * arrive. Resolves when the run ends (RUN_FINISHED or RUN_ERROR) or the
- * underlying observable errors.
+ * arrive. Resolves when the run ends (RUN_FINISHED or RUN_ERROR), the
+ * underlying observable errors, or ``signal`` aborts.
+ *
+ * Passing the caller's ``AbortSignal`` (typically
+ * ``flowStore.buildController.signal``) lets ``flowStore.stopBuilding`` cancel
+ * the in-flight SSE request, not just the local build state. Without it the
+ * agent's internal AbortController would keep streaming after Stop.
  */
-export async function runFlowAGUI(opts: WorkflowRunOptions): Promise<void> {
+export async function runFlowAGUI(
+  opts: WorkflowRunOptions & { signal?: AbortSignal },
+): Promise<void> {
   const body = buildWorkflowRunRequest(opts);
   const agent = createWorkflowAgent({ body });
+  // Replace the agent's internal AbortController with one tied to the
+  // caller's signal so an upstream stop also aborts the SSE fetch. Without
+  // this, the agent owns its own controller and the stream keeps running
+  // even after ``stopBuilding`` aborts the caller's controller.
+  if (opts.signal) {
+    const linkedController = new AbortController();
+    if (opts.signal.aborted) {
+      linkedController.abort();
+    } else {
+      opts.signal.addEventListener("abort", () => linkedController.abort(), {
+        once: true,
+      });
+    }
+    (agent as { abortController: AbortController }).abortController =
+      linkedController;
+  }
   const flowStore = useFlowStore.getState();
   const setErrorData = useAlertStore.getState().setErrorData;
   const touchedNodeIds = new Set<string>();
@@ -163,6 +197,12 @@ export async function runFlowAGUI(opts: WorkflowRunOptions): Promise<void> {
   // entries, so we fall back to an empty string (matches the legacy
   // contract for an unresolved run).
   let runId = "";
+  // ``buildInfo`` must be set on every terminal path (RUN_FINISHED,
+  // RUN_ERROR, observable error, complete-without-terminal-event, abort)
+  // so the caller's analytics ``trackFlowBuild`` can read success vs
+  // failure. Without this, a silent ``complete:`` would leave ``buildInfo``
+  // ``null`` and ``trackFlowBuild`` would mis-record the run as success.
+  let terminalEventSeen = false;
 
   // `agent.run` still needs a `RunAgentInput` for the client-side apply
   // pipeline (subscriber correlation); the actual wire body is the native
@@ -188,20 +228,48 @@ export async function runFlowAGUI(opts: WorkflowRunOptions): Promise<void> {
     },
     applyDelta: (ops) => applyStateDelta(ops, runId, touchedNodeIds),
     handleCustomEvent: (eventType, data) => handleMessageEvent(eventType, data),
-    onFinished: () => flowStore.setBuildInfo({ success: true }),
+    onFinished: () => {
+      terminalEventSeen = true;
+      flowStore.setBuildInfo({ success: true });
+    },
     onError: (message) => {
+      terminalEventSeen = true;
       flowStore.setBuildInfo({ error: [message], success: false });
       setErrorData({ title: "Workflow run failed", list: [message] });
     },
   };
 
   return new Promise<void>((resolve) => {
+    let settled = false;
     const finish = () => {
+      if (settled) return;
+      settled = true;
       flowStore.updateEdgesRunningByNodes([...touchedNodeIds], false);
       flowStore.setIsBuilding(false);
       flowStore.revertBuiltStatusFromBuilding();
       resolve();
     };
+
+    const abortHandler = () => {
+      // ``buildController.abort`` was called from ``flowStore.stopBuilding``.
+      // Mark the run as a failure so analytics records the cancellation and
+      // tear the subscription down (the agent's internal AbortController is
+      // already linked to this signal, so the SSE fetch is already aborting).
+      if (!terminalEventSeen) {
+        flowStore.setBuildInfo({ error: ["Build stopped"], success: false });
+      }
+      subscription.unsubscribe();
+      finish();
+    };
+    if (opts.signal) {
+      if (opts.signal.aborted) {
+        // Already aborted before we even started. Skip the subscribe.
+        flowStore.setBuildInfo({ error: ["Build stopped"], success: false });
+        finish();
+        return;
+      }
+      opts.signal.addEventListener("abort", abortHandler, { once: true });
+    }
 
     const subscription = agent.run(runInput).subscribe({
       next: (event: BaseEvent) => {
@@ -222,6 +290,16 @@ export async function runFlowAGUI(opts: WorkflowRunOptions): Promise<void> {
         finish();
       },
       complete: () => {
+        // ``complete`` without a terminal event means the SSE stream closed
+        // cleanly but never delivered RUN_FINISHED/RUN_ERROR (server crash,
+        // truncated response, proxy timeout). Record an error so analytics
+        // doesn't treat a silent close as success.
+        if (!terminalEventSeen) {
+          flowStore.setBuildInfo({
+            error: ["Workflow run ended unexpectedly"],
+            success: false,
+          });
+        }
         subscription.unsubscribe();
         finish();
       },

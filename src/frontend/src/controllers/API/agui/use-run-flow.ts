@@ -47,6 +47,11 @@ export type UseRunFlowAgentOptions = Omit<WorkflowAgentOptions, "body">;
 export function useRunFlow(agentOptions: UseRunFlowAgentOptions = {}) {
   const agentRef = useRef<WorkflowHttpAgent | null>(null);
   const subRef = useRef<Subscription | null>(null);
+  // The active run's resolver. Held so ``abort`` and a preempting ``run``
+  // can settle the previous Promise instead of leaving callers awaiting
+  // forever when the observable doesn't emit ``error``/``complete`` for
+  // the cancelled path.
+  const resolveRef = useRef<(() => void) | null>(null);
   const [state, setState] = useState<UseRunFlowState>(INITIAL_STATE);
 
   const run = useCallback(
@@ -56,8 +61,11 @@ export function useRunFlow(agentOptions: UseRunFlowAgentOptions = {}) {
         // agent's AbortController; without it the previous fetch is
         // orphaned (unsubscribe only detaches the local RxJS subscriber)
         // and keeps draining bytes until the server closes the connection.
+        // Also settle the prior Promise so its callers don't deadlock.
+        resolveRef.current?.();
         subRef.current?.unsubscribe();
         agentRef.current?.abortRun();
+        resolveRef.current = resolve;
         setState({ events: [], isRunning: true, error: null });
 
         const body = buildWorkflowRunRequest(opts);
@@ -78,17 +86,24 @@ export function useRunFlow(agentOptions: UseRunFlowAgentOptions = {}) {
           forwardedProps: {},
         };
 
+        const settle = () => {
+          if (resolveRef.current === resolve) {
+            resolveRef.current = null;
+          }
+          resolve();
+        };
+
         subRef.current = agent.run(runInput).subscribe({
           next: (event) => {
             setState((s) => ({ ...s, events: [...s.events, event] }));
           },
           error: (err: Error) => {
             setState((s) => ({ ...s, isRunning: false, error: err }));
-            resolve();
+            settle();
           },
           complete: () => {
             setState((s) => ({ ...s, isRunning: false }));
-            resolve();
+            settle();
           },
         });
       }),
@@ -99,6 +114,11 @@ export function useRunFlow(agentOptions: UseRunFlowAgentOptions = {}) {
     subRef.current?.unsubscribe();
     agentRef.current?.abortRun();
     setState((s) => ({ ...s, isRunning: false }));
+    // ``abortRun`` synchronously stops the SSE fetch, but the RxJS
+    // subscriber won't fire ``error``/``complete`` for that path. Resolve
+    // the run Promise here so callers awaiting ``run()`` aren't stuck.
+    resolveRef.current?.();
+    resolveRef.current = null;
   }, []);
 
   return { ...state, run, abort };

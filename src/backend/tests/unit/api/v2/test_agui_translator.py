@@ -290,6 +290,41 @@ def test_end_vertex_does_not_close_open_text_message():
     assert more[0].message_id == "m1"
 
 
+def test_token_without_message_id_is_dropped():
+    """Token events with missing ``id`` cannot drive the AG-UI lifecycle.
+
+    A TextMessageStart/Content/End triple requires a stable id to correlate
+    chunks. Emitting events with ``message_id=""`` produces malformed
+    streams that some AG-UI clients reject; drop the event instead.
+    """
+    t = AGUITranslator(run_id="r1", thread_id="t1")
+    t.start()
+
+    no_id = t.translate("token", {"chunk": "hello"})
+    none_id = t.translate("token", {"chunk": "hello", "id": None})
+    empty_id = t.translate("token", {"chunk": "hello", "id": ""})
+
+    assert no_id == []
+    assert none_id == []
+    assert empty_id == []
+
+
+def test_add_message_without_message_id_skips_text_lifecycle():
+    """``add_message`` without an id must not emit TextMessage* events.
+
+    Tool-call sub-events can still ride a missing id (they namespace by
+    block/content index), but the text lifecycle needs a stable id.
+    """
+    t = AGUITranslator(run_id="r1", thread_id="t1")
+    t.start()
+
+    out = t.translate("add_message", {"text": "hello"})
+
+    assert all(not isinstance(e, TextMessageStartEvent) for e in out)
+    assert all(not isinstance(e, TextMessageContentEvent) for e in out)
+    assert all(not isinstance(e, TextMessageEndEvent) for e in out)
+
+
 def test_add_message_plain_text_emits_a_text_message():
     t = AGUITranslator(run_id="r1", thread_id="t1")
     t.start()

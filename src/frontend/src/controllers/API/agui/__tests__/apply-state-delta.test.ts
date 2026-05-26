@@ -212,4 +212,74 @@ describe("applyStateDelta", () => {
     expect(state.flowPool["node-a"][0].valid).toBe(true);
     expect(state.flowPool["node-b"][0].valid).toBe(false);
   });
+
+  describe("edge animation tracks node status", () => {
+    /**
+     * The v1 build path drove edge animation through onBuildStart/onBuildEnd.
+     * Without an explicit toggle here the AG-UI path used to leave edges
+     * static until ``finish()`` cleared them. Pin the contract: running flips
+     * edges on, success/error flips them off (per-node, no global resets).
+     */
+    it("flips edges on when a node enters running status", () => {
+      const touched = new Set<string>();
+      const calls: Array<{ ids: string[]; running: boolean }> = [];
+      const original = useFlowStore.getState().updateEdgesRunningByNodes;
+      useFlowStore.setState({
+        updateEdgesRunningByNodes: (ids: string[], running: boolean) => {
+          calls.push({ ids, running });
+        },
+      });
+
+      applyStateDelta(
+        [
+          {
+            op: "add",
+            path: "/nodes/node-a",
+            value: { status: "running", output: null },
+          },
+        ],
+        "run-1",
+        touched,
+      );
+
+      useFlowStore.setState({ updateEdgesRunningByNodes: original });
+
+      expect(calls).toEqual([{ ids: ["node-a"], running: true }]);
+    });
+
+    it("flips edges off when a node completes (success or error)", () => {
+      const touched = new Set<string>();
+      const calls: Array<{ ids: string[]; running: boolean }> = [];
+      const original = useFlowStore.getState().updateEdgesRunningByNodes;
+      useFlowStore.setState({
+        updateEdgesRunningByNodes: (ids: string[], running: boolean) => {
+          calls.push({ ids, running });
+        },
+      });
+
+      applyStateDelta(
+        [
+          {
+            op: "add",
+            path: "/nodes/node-a",
+            value: { status: "success", output: { results: {} } },
+          },
+          {
+            op: "add",
+            path: "/nodes/node-b",
+            value: { status: "error", output: null },
+          },
+        ],
+        "run-1",
+        touched,
+      );
+
+      useFlowStore.setState({ updateEdgesRunningByNodes: original });
+
+      expect(calls).toEqual([
+        { ids: ["node-a"], running: false },
+        { ids: ["node-b"], running: false },
+      ]);
+    });
+  });
 });

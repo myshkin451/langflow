@@ -430,7 +430,10 @@ class TestAGUIBackgroundReattach:
         assert response.status_code == 200
         body = response.text
         # Event 0 is RUN_STARTED; with Last-Event-ID=0 it must not be replayed.
-        assert "id: 0\n" not in body
+        # Split per line so CRLF endings don't sneak the event through the
+        # substring check.
+        event_ids = [line.removeprefix("id:").strip() for line in body.splitlines() if line.startswith("id:")]
+        assert "0" not in event_ids
         assert "RUN_FINISHED" in body
 
     async def test_reattach_unknown_job_returns_404(
@@ -890,6 +893,70 @@ class TestMemoryBaseHookBackgroundMode:
         assert call["flow_id"] == chatbot_flow
         assert call["session_id"] == "thread-1"  # matches _agui_body session_id
         assert call["job_id"] == _UUID(job_id)
+
+
+class TestBackgroundFinalizationGuards:
+    """Cancellation state + cleanup guarantees for the background path.
+
+    ``_buffer_background_run`` and ``execute_workflow_background`` must
+    preserve cancellation state and clean up after scheduling failures.
+    """
+
+    async def test_finalize_does_not_overwrite_cancelled_status(
+        self,
+        client: AsyncClient,
+        created_api_key,
+        chatbot_flow,
+    ):
+        """A run cancelled mid-flight must stay CANCELLED after the buffer ends.
+
+        Race: ``stop_workflow`` sets the job to CANCELLED. The buffer task's
+        ``finally`` block runs shortly after and previously wrote
+        COMPLETED/FAILED unconditionally, silently overwriting the user's
+        stop intent. Guarded by ``_finalize_job_status``.
+        """
+        import asyncio as _asyncio
+        from uuid import UUID as _UUID
+
+        from langflow.services.database.models.jobs.model import Job as _Job
+        from langflow.services.database.models.jobs.model import JobStatus as _JobStatus
+
+        headers = {"x-api-key": created_api_key.api_key}
+        start = await client.post(
+            "api/v2/workflows",
+            json=_agui_body(chatbot_flow, message="hi", mode="background"),
+            headers=headers,
+        )
+        assert start.status_code == 200
+        job_id = start.json()["job_id"]
+        job_uuid = _UUID(job_id)
+
+        # Stop the run before it gets a chance to complete on its own. The
+        # /stop endpoint flips the row to CANCELLED.
+        stop = await client.post(
+            "api/v2/workflows/stop",
+            json={"job_id": job_id},
+            headers=headers,
+        )
+        assert stop.status_code == 200
+
+        # Give the buffer task time to reach its finally block and call
+        # _finalize_job_status. Poll the row for stability.
+        for _ in range(60):
+            async with session_scope() as session:
+                row = await session.get(_Job, job_uuid)
+                if row is not None and row.status in (_JobStatus.COMPLETED, _JobStatus.FAILED):
+                    break
+            await _asyncio.sleep(0.1)
+
+        async with session_scope() as session:
+            row = await session.get(_Job, job_uuid)
+            assert row is not None
+            assert row.status == _JobStatus.CANCELLED, (
+                f"Buffer task overwrote the user's cancellation: got {row.status} "
+                f"(expected CANCELLED). The finally block in _buffer_background_run "
+                f"is racing with stop_workflow."
+            )
 
 
 class TestBackgroundModeStreamProtocol:

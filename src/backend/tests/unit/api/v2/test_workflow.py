@@ -391,7 +391,7 @@ class TestWorkflowIDORProtection:
             assert response.status_code == 404
             result = response.json()
             assert result["detail"]["code"] == "JOB_NOT_FOUND"
-            assert str(job_id) in result["detail"]["job_id"]
+            assert result["detail"]["job_id"] == str(job_id)
         finally:
             async with session_scope() as session:
                 db_job = await session.get(Job, job_id)
@@ -425,7 +425,7 @@ class TestWorkflowIDORProtection:
 
             assert response.status_code == 200
             result = response.json()
-            assert str(job_id) in result["job_id"]
+            assert result["job_id"] == str(job_id)
         finally:
             async with session_scope() as session:
                 db_job = await session.get(Job, job_id)
@@ -469,7 +469,7 @@ class TestWorkflowIDORProtection:
             assert response.status_code == 404
             result = response.json()
             assert result["detail"]["code"] == "JOB_NOT_FOUND"
-            assert str(job_id) in result["detail"]["job_id"]
+            assert result["detail"]["job_id"] == str(job_id)
         finally:
             async with session_scope() as session:
                 db_job = await session.get(Job, job_id)

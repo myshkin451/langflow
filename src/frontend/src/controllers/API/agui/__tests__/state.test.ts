@@ -147,4 +147,51 @@ describe("applyAGUIStateEvent", () => {
 
     expect(applyAGUIStateEvent(start, ignored)).toBe(start);
   });
+
+  describe("malformed payloads do not crash the reducer", () => {
+    it("ignores STATE_SNAPSHOT with nodes=null", () => {
+      const start: CanvasState = {
+        nodes: { A: { status: "running", output: null } },
+      };
+      expect(applyAGUIStateEvent(start, snapshot({ nodes: null }))).toBe(start);
+    });
+
+    it("ignores STATE_SNAPSHOT with nodes as an array", () => {
+      const start: CanvasState = {
+        nodes: { A: { status: "running", output: null } },
+      };
+      // Arrays are typeof "object" too — must be filtered out explicitly.
+      expect(applyAGUIStateEvent(start, snapshot({ nodes: [] }))).toBe(start);
+    });
+
+    it("ignores STATE_SNAPSHOT where snapshot itself is null", () => {
+      expect(applyAGUIStateEvent(INITIAL_CANVAS_STATE, snapshot(null))).toBe(
+        INITIAL_CANVAS_STATE,
+      );
+    });
+
+    it("treats STATE_DELTA with non-array delta as a no-op", () => {
+      const start: CanvasState = {
+        nodes: { A: { status: "running", output: null } },
+      };
+      const bogus = {
+        type: EventType.STATE_DELTA,
+        delta: { op: "add", path: "/nodes/B", value: null },
+      } as unknown as BaseEvent;
+
+      expect(applyAGUIStateEvent(start, bogus)).toBe(start);
+    });
+
+    it("treats STATE_DELTA with delta=null as a no-op", () => {
+      const start: CanvasState = {
+        nodes: { A: { status: "running", output: null } },
+      };
+      const bogus = {
+        type: EventType.STATE_DELTA,
+        delta: null,
+      } as unknown as BaseEvent;
+
+      expect(applyAGUIStateEvent(start, bogus)).toBe(start);
+    });
+  });
 });

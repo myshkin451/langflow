@@ -916,6 +916,14 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       );
     }
 
+    // Each build gets its own AbortController so ``stopBuilding`` cancels
+    // only the in-flight run (re-using a controller across runs would leave
+    // it in the aborted state for the next call). The signal is passed to
+    // ``runFlowAGUI`` so Stop aborts the actual SSE request, not just the
+    // local build state.
+    const buildController = new AbortController();
+    get().setBuildController(buildController);
+
     // Always run through the v2 workflows endpoint. Current frontend nodes
     // + edges are sent so unsaved tweaks (dropdowns, text inputs) run as
     // the user sees them.
@@ -927,6 +935,7 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       stopComponentId: stopNodeId,
       flowData: { nodes: get().nodes, edges: get().edges },
       files,
+      signal: buildController.signal,
     });
 
     // Mirror the v1 build callbacks' analytics: every actual build attempt
