@@ -811,6 +811,87 @@ class TestAGUIBackgroundTasksLifecycle:
         )
 
 
+class TestMemoryBaseHookBackgroundMode:
+    """The memory-base ``on_flow_output`` hook must fire after a background run.
+
+    Sync mode wires the hook directly inside ``execute_workflow_sync`` and the
+    v1 build pipeline wires it after ``end_all_traces`` in ``api/build.py``.
+    The v2 background mode buffers frames in ``_buffer_background_run`` and
+    must dispatch the same hook in its ``finally`` block on successful
+    completion. Without it, MemoryBase auto-capture silently misses every
+    background run.
+    """
+
+    async def test_background_run_fires_memory_base_hook_on_success(
+        self,
+        client: AsyncClient,
+        created_api_key,
+        chatbot_flow,
+        monkeypatch: pytest.MonkeyPatch,
+    ):
+        """Background run schedules ``on_flow_output``.
+
+        ``flow_id``, ``session_id``, and ``job_id`` must reach the hook.
+        """
+        from langflow.api.v2 import workflow as _workflow_module
+
+        captured: list[dict] = []
+
+        class _RecordingMemoryBaseService:
+            async def on_flow_output(self, **kwargs):
+                captured.append(kwargs)
+
+        monkeypatch.setattr(
+            _workflow_module,
+            "get_memory_base_service",
+            lambda: _RecordingMemoryBaseService(),
+        )
+
+        headers = {"x-api-key": created_api_key.api_key}
+        start = await client.post(
+            "api/v2/workflows",
+            json=_agui_body(chatbot_flow, message="hi", mode="background"),
+            headers=headers,
+        )
+        assert start.status_code == 200
+        job_id = start.json()["job_id"]
+
+        events = await client.get(f"api/v2/workflows/{job_id}/events", headers=headers)
+        assert events.status_code == 200
+        assert "RUN_FINISHED" in events.text
+
+        # Wait for the buffer task to finalize the job row.
+        import asyncio as _asyncio
+        from uuid import UUID as _UUID
+
+        from langflow.services.database.models.jobs.model import Job as _Job
+
+        for _ in range(100):
+            async with session_scope() as session:
+                row = await session.get(_Job, _UUID(job_id))
+                if row is not None and row.status.value in ("completed", "failed"):
+                    break
+            await _asyncio.sleep(0.1)
+
+        # The hook is fired via ``fire_and_forget_task`` so allow the loop a
+        # tick to drain the scheduled coroutine.
+        for _ in range(20):
+            if captured:
+                break
+            await _asyncio.sleep(0.05)
+
+        assert captured, (
+            "Memory-base on_flow_output was not called after a successful "
+            "background run. The hook is silently dropped for every "
+            "background-mode workflow run."
+        )
+        assert len(captured) == 1
+        call = captured[0]
+        assert call["flow_id"] == chatbot_flow
+        assert call["session_id"] == "thread-1"  # matches _agui_body session_id
+        assert call["job_id"] == _UUID(job_id)
+
+
 class TestBackgroundModeStreamProtocol:
     """Background mode must honor ``stream_protocol`` end-to-end.
 

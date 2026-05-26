@@ -50,15 +50,24 @@ jest.mock("../darkStore", () => ({
   },
 }));
 
-jest.mock("../flowsManagerStore", () => ({
-  __esModule: true,
-  default: {
-    getState: () => ({
-      setCurrentFlow: jest.fn(),
-      takeSnapshot: jest.fn(),
-    }),
-  },
-}));
+jest.mock("../flowsManagerStore", () => {
+  const state: { currentFlow: { id: string; name: string } | undefined } = {
+    currentFlow: undefined,
+  };
+  return {
+    __esModule: true,
+    default: {
+      getState: () => ({
+        ...state,
+        setCurrentFlow: jest.fn(),
+        takeSnapshot: jest.fn(),
+      }),
+      __setCurrentFlow: (flow: { id: string; name: string } | undefined) => {
+        state.currentFlow = flow;
+      },
+    },
+  };
+});
 
 jest.mock("../globalVariablesStore/globalVariables", () => ({
   useGlobalVariablesStore: {
@@ -89,6 +98,25 @@ jest.mock("../typesStore", () => ({
 jest.mock("@/utils/utils", () => ({
   brokenEdgeMessage: jest.fn(),
 }));
+
+// runFlowAGUI is exercised end-to-end in its own bridge tests; here we just
+// need a controllable replacement so the buildFlow integration can be tested
+// without touching the network.
+jest.mock("@/controllers/API/agui/run-flow-bridge", () => ({
+  runFlowAGUI: jest.fn(),
+}));
+
+// Keep reactflowUtils' real behaviour for the rest of the suite; only flip
+// validateNodes / validateEdge to no-ops so the buildFlow analytics tests can
+// reach the runFlowAGUI call with an empty (test-fixture) graph.
+jest.mock("../../utils/reactflowUtils", () => {
+  const actual = jest.requireActual("../../utils/reactflowUtils");
+  return {
+    ...actual,
+    validateNodes: jest.fn(() => []),
+    validateEdge: jest.fn(() => []),
+  };
+});
 
 // Note: Some utility modules may not exist in test environment
 // The store should handle missing utilities gracefully
@@ -1105,6 +1133,84 @@ describe("useFlowStore", () => {
       const latest = result.current.flowPool["node-99"].at(-1)!.data.logs;
       expect(latest["output_a"]).toEqual([mockLog]);
       expect(latest["output_b"]).toEqual([mockLog2]);
+    });
+  });
+
+  describe("buildFlow analytics — trackFlowBuild integration", () => {
+    let mockedRunFlow: jest.Mock;
+    let trackFlowBuildMock: jest.Mock;
+
+    beforeAll(() => {
+      // Cast through unknown so the test does not depend on the bridge module's
+      // public type — we only care about controlling the side effect.
+      const bridge = jest.requireMock(
+        "@/controllers/API/agui/run-flow-bridge",
+      ) as { runFlowAGUI: jest.Mock };
+      mockedRunFlow = bridge.runFlowAGUI;
+
+      const analytics = jest.requireMock("@/customization/utils/analytics") as {
+        trackFlowBuild: jest.Mock;
+      };
+      trackFlowBuildMock = analytics.trackFlowBuild;
+
+      // Make `currentFlow` resolvable inside buildFlow.
+      const flowsManager = jest.requireMock("../flowsManagerStore") as {
+        default: {
+          __setCurrentFlow: (
+            flow: { id: string; name: string } | undefined,
+          ) => void;
+        };
+      };
+      flowsManager.default.__setCurrentFlow({
+        id: "flow-abc",
+        name: "Test Flow",
+      });
+    });
+
+    beforeEach(() => {
+      mockedRunFlow.mockReset();
+      trackFlowBuildMock.mockReset();
+      act(() => {
+        useFlowStore.setState({
+          nodes: [],
+          edges: [],
+          buildInfo: null,
+          flowBuildStatus: {},
+          isBuilding: false,
+          componentsToUpdate: [],
+        });
+      });
+    });
+
+    it("fires trackFlowBuild with isError=false after a successful run", async () => {
+      mockedRunFlow.mockImplementation(async () => {
+        // The bridge writes success into the store on `RUN_FINISHED`.
+        useFlowStore.setState({ buildInfo: { success: true } });
+      });
+
+      await useFlowStore.getState().buildFlow({});
+
+      expect(mockedRunFlow).toHaveBeenCalledTimes(1);
+      expect(trackFlowBuildMock).toHaveBeenCalledWith("Test Flow", false, {
+        flowId: "flow-abc",
+      });
+    });
+
+    it("fires trackFlowBuild with isError=true and the error list after a failure", async () => {
+      const errorList = ["boom"];
+      mockedRunFlow.mockImplementation(async () => {
+        useFlowStore.setState({
+          buildInfo: { success: false, error: errorList },
+        });
+      });
+
+      await useFlowStore.getState().buildFlow({});
+
+      expect(mockedRunFlow).toHaveBeenCalledTimes(1);
+      expect(trackFlowBuildMock).toHaveBeenCalledWith("Test Flow", true, {
+        flowId: "flow-abc",
+        error: errorList,
+      });
     });
   });
 });

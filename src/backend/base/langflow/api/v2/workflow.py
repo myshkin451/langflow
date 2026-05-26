@@ -84,7 +84,7 @@ from langflow.services.auth.utils import get_current_user_for_workflow
 from langflow.services.database.models.flow.model import FlowRead
 from langflow.services.database.models.jobs.model import JobType
 from langflow.services.database.models.user.model import UserRead
-from langflow.services.deps import get_job_service, get_queue_service, get_task_service
+from langflow.services.deps import get_job_service, get_memory_base_service, get_queue_service, get_task_service
 
 # Configuration constants
 EXECUTION_TIMEOUT = 300  # 5 minutes default timeout for sync execution
@@ -428,6 +428,18 @@ async def execute_sync_workflow(
             outputs=terminal_node_ids,
             stream=False,
         )
+
+        # Fire memory-base auto-capture hook — non-blocking background effect.
+        try:
+            _run_id_uuid = UUID(graph.run_id) if graph.run_id else None  # type-cast only; same run_id set on graph
+            await get_task_service().fire_and_forget_task(
+                get_memory_base_service().on_flow_output,
+                flow_id=flow.id,
+                session_id=execution_session_id,
+                job_id=_run_id_uuid,
+            )
+        except (RuntimeError, ValueError, OSError):
+            await logger.awarning("Memory base hook scheduling failed for flow %s", flow.id, exc_info=True)
 
         # Build RunResponse
         run_response = RunResponse(outputs=task_result, session_id=execution_session_id)
@@ -810,6 +822,20 @@ async def _buffer_background_run(
                 JobStatus.FAILED if errored else JobStatus.COMPLETED,
                 finished_timestamp=True,
             )
+        # Fire memory-base auto-capture hook on successful runs only. Matches
+        # the sync mode wiring above and the v1 build-pipeline wiring in
+        # ``api/build.py``. ``fire_and_forget_task`` because we are already a
+        # background coroutine and the hook must not block job finalization.
+        if not errored:
+            try:
+                await get_task_service().fire_and_forget_task(
+                    get_memory_base_service().on_flow_output,
+                    flow_id=flow.id,
+                    session_id=parsed.session_id or str(flow.id),
+                    job_id=job_uuid,
+                )
+            except (RuntimeError, ValueError, OSError):
+                await logger.awarning("Memory base hook scheduling failed for flow %s", flow.id, exc_info=True)
 
 
 async def execute_workflow_background(
