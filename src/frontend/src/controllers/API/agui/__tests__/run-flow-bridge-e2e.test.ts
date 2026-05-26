@@ -321,10 +321,11 @@ describe("runFlowAGUI end-to-end", () => {
       expect(signals[0].aborted).toBe(true);
       const flow = useFlowStore.getState();
       expect(flow.isBuilding).toBe(false);
-      expect(flow.buildInfo).toEqual({
-        error: ["Build stopped"],
-        success: false,
-      });
+      // ``buildInfo`` is recorded as a failure (so trackFlowBuild sees the
+      // cancellation as an error) but without an ``error`` string: the
+      // caller's stopBuilding already shows the user-facing "Build stopped"
+      // alert and a duplicate inside the canvas footer would trip locators.
+      expect(flow.buildInfo).toEqual({ success: false });
     } finally {
       fetchSpy.mockRestore();
     }

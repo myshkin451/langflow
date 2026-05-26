@@ -255,8 +255,12 @@ export async function runFlowAGUI(
       // Mark the run as a failure so analytics records the cancellation and
       // tear the subscription down (the agent's internal AbortController is
       // already linked to this signal, so the SSE fetch is already aborting).
+      // Do NOT write an ``error`` string here: ``stopBuilding`` already
+      // surfaces the user-facing "Build stopped" alert. A second message in
+      // ``buildInfo.error`` would render the same text inside the canvas
+      // footer and trip strict locators ("build stopped" resolved twice).
       if (!terminalEventSeen) {
-        flowStore.setBuildInfo({ error: ["Build stopped"], success: false });
+        flowStore.setBuildInfo({ success: false });
       }
       subscription.unsubscribe();
       finish();
@@ -264,7 +268,7 @@ export async function runFlowAGUI(
     if (opts.signal) {
       if (opts.signal.aborted) {
         // Already aborted before we even started. Skip the subscribe.
-        flowStore.setBuildInfo({ error: ["Build stopped"], success: false });
+        flowStore.setBuildInfo({ success: false });
         finish();
         return;
       }
