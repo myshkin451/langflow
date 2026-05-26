@@ -94,6 +94,7 @@ jest.mock("@/utils/utils", () => ({
 // The store should handle missing utilities gracefully
 
 import { checkCodeValidity } from "@/CustomNodes/helpers/check-code-validity";
+import type { LogsLogType, VertexBuildTypeAPI } from "@/types/api";
 import type { AllNodeType, EdgeType } from "@/types/flow";
 import useFlowStore, {
   completeNodeUpdate,
@@ -867,8 +868,8 @@ describe("useFlowStore", () => {
     const createEdge = (
       id: string,
       sourceHandleId: string,
-      overrides: Partial<any> = {},
-    ) =>
+      overrides: Partial<EdgeType> = {},
+    ): EdgeType =>
       ({
         id,
         source: `src-${id}`,
@@ -877,7 +878,7 @@ describe("useFlowStore", () => {
         className: "",
         data: { sourceHandle: { id: sourceHandleId } },
         ...overrides,
-      }) as any;
+      }) as unknown as EdgeType;
 
     it("should clear all edge animations when no nextIds provided", () => {
       const { result } = renderHook(() => useFlowStore());
@@ -986,13 +987,13 @@ describe("useFlowStore", () => {
       id: "node-1",
       data: { results: {} },
       valid: true,
-    } as any;
+    } as unknown as VertexBuildTypeAPI;
 
     const mockVertexData2 = {
       id: "node-1",
       data: { results: { other: true } },
       valid: true,
-    } as any;
+    } as unknown as VertexBuildTypeAPI;
 
     it("should add data to new nodeId entry", () => {
       const { result } = renderHook(() => useFlowStore());
@@ -1039,12 +1040,16 @@ describe("useFlowStore", () => {
   });
 
   describe("appendLogToFlowPool", () => {
-    const mockLog = { name: "Test Log", message: "hello", type: "info" } as any;
+    const mockLog = {
+      name: "Test Log",
+      message: "hello",
+      type: "info",
+    } as unknown as LogsLogType;
     const mockLog2 = {
       name: "Second Log",
       message: "world",
       type: "info",
-    } as any;
+    } as unknown as LogsLogType;
 
     it("creates a new pool entry with the log when no entry exists for nodeId", () => {
       const { result } = renderHook(() => useFlowStore());
