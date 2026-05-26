@@ -6,19 +6,12 @@ import {
   type Node,
   type NodeChange,
 } from "@xyflow/react";
-import { cloneDeep, zip } from "lodash";
+import { cloneDeep } from "lodash";
 import { create } from "zustand";
 import { checkCodeValidity } from "@/CustomNodes/helpers/check-code-validity";
-import { queryClient } from "@/contexts";
-import {
-  ENABLE_DATASTAX_LANGFLOW,
-  ENABLE_INSPECTION_PANEL,
-} from "@/customization/feature-flags";
-import {
-  track,
-  trackDataLoaded,
-  trackFlowBuild,
-} from "@/customization/utils/analytics";
+import { runFlowAGUI } from "@/controllers/API/agui/run-flow-bridge";
+import { ENABLE_INSPECTION_PANEL } from "@/customization/feature-flags";
+import { track } from "@/customization/utils/analytics";
 import { brokenEdgeMessage } from "@/utils/utils";
 import { BuildStatus, EventDeliveryType } from "../constants/enums";
 import i18n from "../i18n";
@@ -36,7 +29,6 @@ import type {
   FlowStoreType,
   VertexLayerElementType,
 } from "../types/zustand/flow";
-import { buildFlowVerticesWithFallback } from "../utils/buildUtils";
 import {
   buildPositionDictionary,
   checkChatInput,
@@ -190,7 +182,7 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
     set({ isBuilding: false });
     get().revertBuiltStatusFromBuilding();
     useAlertStore.getState().setErrorData({
-      title: (i18n as any).t("alerts.buildStopped"),
+      title: "Build stopped",
     });
   },
   isPending: true,
@@ -360,8 +352,6 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       positionDictionary: {},
       rightClickedNodeId: null,
     });
-    // Patch translatable fields if types are already loaded in the new language
-    syncNodeTranslations();
   },
   setIsBuilding: (isBuilding) => {
     const current = get();
@@ -818,7 +808,6 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       },
       buildInfo: null,
     });
-    const playgroundPage = get().playgroundPage;
     get().setIsBuilding(true);
     set({ flowBuildStatus: {} });
     const currentFlow = useFlowsManagerStore.getState().currentFlow;
@@ -925,202 +914,18 @@ const useFlowStore = create<FlowStoreType>((set, get) => ({
       );
     }
 
-    function validateSubgraph() {}
-    function handleBuildUpdate(
-      vertexBuildData: VertexBuildTypeAPI,
-      status: BuildStatus,
-      runId: string,
-    ) {
-      if (vertexBuildData && vertexBuildData.inactivated_vertices) {
-        get().removeFromVerticesBuild(vertexBuildData.inactivated_vertices);
-        if (vertexBuildData.inactivated_vertices.length > 0) {
-          get().updateBuildStatus(
-            vertexBuildData.inactivated_vertices,
-            BuildStatus.INACTIVE,
-          );
-        }
-      }
-
-      if (vertexBuildData.next_vertices_ids) {
-        // next_vertices_ids is a list of vertices that are going to be built next
-        // verticesLayers is a list of list of vertices ids, where each list is a layer of vertices
-        // we want to add a new layer (next_vertices_ids) to the list of layers (verticesLayers)
-        // and the values of next_vertices_ids to the list of vertices ids (verticesIds)
-
-        // const nextVertices will be the zip of vertexBuildData.next_vertices_ids and
-        // vertexBuildData.top_level_vertices
-        // the VertexLayerElementType as {id: next_vertices_id, layer: top_level_vertex}
-
-        // next_vertices_ids should be next_vertices_ids without the inactivated vertices
-        const next_vertices_ids = vertexBuildData.next_vertices_ids.filter(
-          (id) => !vertexBuildData.inactivated_vertices?.includes(id),
-        );
-        const top_level_vertices = vertexBuildData.top_level_vertices.filter(
-          (vertex) => !vertexBuildData.inactivated_vertices?.includes(vertex),
-        );
-        let nextVertices: VertexLayerElementType[] = zip(
-          next_vertices_ids,
-          top_level_vertices,
-        ).map(([id, reference]) => ({ id: id!, reference }));
-
-        // Now we filter nextVertices to remove any vertices that are in verticesLayers
-        // because they are already being built
-        // each layer is a list of vertexlayerelementtypes
-        const lastLayer =
-          get().verticesBuild!.verticesLayers[
-            get().verticesBuild!.verticesLayers.length - 1
-          ];
-
-        nextVertices = nextVertices.filter(
-          (vertexElement) =>
-            !lastLayer.some(
-              (layerElement) =>
-                layerElement.id === vertexElement.id &&
-                layerElement.reference === vertexElement.reference,
-            ),
-        );
-        const newLayers = [
-          ...get().verticesBuild!.verticesLayers,
-          nextVertices,
-        ];
-        const newIds = [
-          ...get().verticesBuild!.verticesIds,
-          ...next_vertices_ids,
-        ];
-        if (
-          ENABLE_DATASTAX_LANGFLOW &&
-          vertexBuildData?.id?.includes("AstraDB")
-        ) {
-          const search_results: LogsLogType[] = Object.values(
-            vertexBuildData?.data?.logs?.search_results,
-          );
-          search_results.forEach((log) => {
-            if (
-              log.message.includes("Adding") &&
-              log.message.includes("documents") &&
-              log.message.includes("Vector Store")
-            ) {
-              trackDataLoaded(
-                get().currentFlow?.id,
-                get().currentFlow?.name,
-                "AstraDB Vector Store",
-                vertexBuildData?.id,
-              );
-            }
-          });
-        }
-        get().updateVerticesBuild({
-          verticesIds: newIds,
-          verticesLayers: newLayers,
-          runId: runId,
-          verticesToRun: get().verticesBuild!.verticesToRun,
-        });
-
-        get().updateBuildStatus(top_level_vertices, BuildStatus.TO_BUILD);
-      }
-
-      get().addDataToFlowPool(
-        { ...vertexBuildData, run_id: runId },
-        vertexBuildData.id,
-      );
-      if (status !== BuildStatus.ERROR) {
-        get().updateBuildStatus([vertexBuildData.id], status);
-      }
-    }
-
-    await buildFlowVerticesWithFallback({
-      session,
-      input_value,
-      files,
+    // Always run through the v2 workflows endpoint. Current frontend nodes
+    // + edges are sent so unsaved tweaks (dropdowns, text inputs) run as
+    // the user sees them.
+    await runFlowAGUI({
       flowId: currentFlow!.id,
-      startNodeId,
-      stopNodeId,
-      onGetOrderSuccess: () => {},
-      onBuildComplete: (allNodesValid) => {
-        if (!silent) {
-          if (allNodesValid) {
-            get().setBuildInfo({ success: true });
-          }
-        }
-        get().updateEdgesRunningByNodes(
-          get().nodes.map((n) => n.id),
-          false,
-        );
-        get().setIsBuilding(false);
-        // Invalidate KB-related caches so any KnowledgeIngestion node
-        // that ran inside this build surfaces its updated stats / runs
-        // the next time the user opens the assets/knowledge-bases tab.
-        // Cheap when no subscribers are mounted; the queries only
-        // refetch if a component is actively reading them.
-        queryClient.invalidateQueries({ queryKey: ["useGetKnowledgeBases"] });
-        queryClient.invalidateQueries({ queryKey: ["useGetIngestionRuns"] });
-        queryClient.invalidateQueries({
-          queryKey: ["useGetKnowledgeBaseChunks"],
-        });
-        trackFlowBuild(get().currentFlow?.name ?? "Unknown", false, {
-          flowId: get().currentFlow?.id,
-        });
-      },
-      onBuildUpdate: handleBuildUpdate,
-      onBuildError: (title: string, list: string[], elementList) => {
-        const idList =
-          (elementList
-            ?.map((element) => element.id)
-            .filter(Boolean) as string[]) ?? get().nodes.map((n) => n.id);
-        useFlowStore.getState().updateBuildStatus(idList, BuildStatus.ERROR);
-        const isCustomComponentBlocked = list.some((msg) =>
-          msg.toLowerCase().includes("custom components are not allowed"),
-        );
-        if (!isCustomComponentBlocked && get().componentsToUpdate.length > 0)
-          setErrorData({
-            title:
-              "There are blocked or outdated components in the flow. The error could be related to them.",
-          });
-        get().updateEdgesRunningByNodes(
-          get().nodes.map((n) => n.id),
-          false,
-        );
-        get().setBuildInfo({ error: list, success: false });
-        useAlertStore.getState().addNotificationToHistory({
-          title: title,
-          type: "error",
-          list: list,
-        });
-        get().setIsBuilding(false);
-        get().buildController.abort();
-        trackFlowBuild(get().currentFlow?.name ?? "Unknown", true, {
-          flowId: get().currentFlow?.id,
-          error: list,
-        });
-      },
-      onBuildStart: (elementList) => {
-        const idList = elementList
-          // reference is the id of the vertex or the id of the parent in a group node
-          .map((element) => element.reference)
-          .filter(Boolean) as string[];
-        get().updateBuildStatus(idList, BuildStatus.BUILDING);
-
-        const edges = get().edges;
-        const newEdges = edges.map((edge) => {
-          if (
-            edge.data?.targetHandle &&
-            idList.includes(edge.data.targetHandle.id ?? "")
-          ) {
-            edge.className = "ran";
-          }
-          return edge;
-        });
-        set({ edges: newEdges });
-      },
-      onValidateNodes: validateSubgraph,
-      nodes: get().nodes || undefined,
-      edges: get().edges || undefined,
-      logBuilds: get().onFlowPage,
-      playgroundPage,
-      eventDelivery,
+      message: input_value,
+      threadId: session,
+      startComponentId: startNodeId,
+      stopComponentId: stopNodeId,
+      flowData: { nodes: get().nodes, edges: get().edges },
+      files,
     });
-    get().setIsBuilding(false);
-    get().revertBuiltStatusFromBuilding();
   },
   getFlow: () => {
     return {
@@ -1352,150 +1157,6 @@ export function recomputeComponentsToUpdateIfNeeded(): void {
   if (nodes.length > 0) {
     updateComponentsToUpdate(nodes);
   }
-}
-
-/** Normalize a component key: strip spaces, lowercase. Mirrors backend normalize_component_key(). */
-function normalizeComponentKey(name: string): string {
-  return name.replace(/\s+/g, "").toLowerCase();
-}
-
-export function syncNodeTranslations(): void {
-  const { nodes } = useFlowStore.getState();
-  if (nodes.length === 0) return;
-
-  const {
-    data: typesData,
-    types,
-    templates,
-    componentDisplayNames,
-  } = useTypesStore.getState();
-
-  // Build normalized lookup: normalize(registryKey) → registryKey
-  // This lets us find "Prompt Template" in the registry when nodeType is "PromptTemplate".
-  const normalizedToRegistryKey: Record<string, string> = {};
-  for (const category of Object.values(typesData)) {
-    for (const registryKey of Object.keys(
-      category as Record<string, unknown>,
-    )) {
-      normalizedToRegistryKey[normalizeComponentKey(registryKey)] = registryKey;
-    }
-  }
-
-  let _noteIndex = 0;
-  const updatedNodes = nodes.map((node) => {
-    const nodeType = node.data.type;
-
-    // Skip note nodes — translations are handled by useGetNoteTranslationsQuery
-    if (node.type === "noteNode") {
-      _noteIndex += 1;
-      return node;
-    }
-
-    // Resolve category: try exact match first, then normalized match
-    const category =
-      types[nodeType] ??
-      types[normalizedToRegistryKey[normalizeComponentKey(nodeType)] ?? ""];
-
-    // Resolve registry key: exact match first, then normalized match
-    const registryKey =
-      typesData[category]?.[nodeType] !== undefined
-        ? nodeType
-        : (normalizedToRegistryKey[normalizeComponentKey(nodeType)] ??
-          nodeType);
-
-    // Resolve definition: normal path first, then fall back to templates which
-    // has legacy aliases pre-resolved (e.g. "Prompt" → Prompt Template definition,
-    // "parser" → ParserComponent definition).
-    const freshDef =
-      category && typesData[category]?.[registryKey]
-        ? typesData[category][registryKey]
-        : templates[nodeType];
-
-    if (!freshDef) return node;
-
-    // Determine whether display_name / description are default (safe to translate)
-    // or user-customized (leave alone). A value is "default" if it appears in the
-    // known-translations set for this component type across any supported locale.
-    const normKey = normalizeComponentKey(nodeType);
-    const knownNames = componentDisplayNames[normKey]?.display_name ?? [];
-    const knownDescs = componentDisplayNames[normKey]?.description ?? [];
-    const shouldTranslateName = knownNames.includes(
-      node.data.node!.display_name,
-    );
-    const shouldTranslateDesc = knownDescs.includes(
-      node.data.node!.description,
-    );
-
-    // Update input field display_names, info (tooltips), and placeholders
-    const updatedTemplate = { ...node.data.node!.template };
-    for (const fieldName of Object.keys(updatedTemplate)) {
-      const freshField = freshDef.template?.[fieldName];
-      if (freshField?.display_name !== undefined) {
-        updatedTemplate[fieldName] = {
-          ...updatedTemplate[fieldName],
-          display_name: freshField.display_name,
-          ...(freshField.info !== undefined && { info: freshField.info }),
-          ...(freshField.placeholder !== undefined && {
-            placeholder: freshField.placeholder,
-          }),
-        };
-      }
-    }
-
-    // Update output display_names and info
-    const updatedOutputs = node.data.node!.outputs?.map((output, i) => {
-      const freshOut = freshDef.outputs?.[i];
-      return freshOut
-        ? {
-            ...output,
-            ...(freshOut.display_name !== undefined && {
-              display_name: freshOut.display_name,
-            }),
-            ...(freshOut.info !== undefined && { info: freshOut.info }),
-          }
-        : output;
-    });
-
-    return {
-      ...node,
-      data: {
-        ...node.data,
-        node: {
-          ...node.data.node!,
-          ...(shouldTranslateName && { display_name: freshDef.display_name }),
-          ...(shouldTranslateDesc && { description: freshDef.description }),
-          template: updatedTemplate,
-          ...(updatedOutputs && { outputs: updatedOutputs }),
-        },
-      },
-    };
-  });
-
-  useFlowStore.setState({ nodes: updatedNodes });
-}
-
-/**
- * Apply translated note node descriptions to the canvas.
- * Called from NoteNode when note_translations endpoint data arrives.
- * translations is a map of node_id → translated markdown text.
- */
-export function syncNoteTranslations(
-  translations: Record<string, string>,
-): void {
-  const { nodes } = useFlowStore.getState();
-  const updatedNodes = nodes.map((node) => {
-    if (node.type !== "noteNode") return node;
-    const translated = translations[node.id];
-    if (!translated) return node;
-    return {
-      ...node,
-      data: {
-        ...node.data,
-        node: { ...node.data.node!, description: translated },
-      },
-    };
-  });
-  useFlowStore.setState({ nodes: updatedNodes });
 }
 
 export default useFlowStore;

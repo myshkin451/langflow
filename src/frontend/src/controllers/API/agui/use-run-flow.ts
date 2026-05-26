@@ -1,0 +1,105 @@
+/**
+ * React hook around the v2 workflows run service.
+ *
+ * Provides a minimal imperative API for components that want to start a run,
+ * collect typed AG-UI events as they arrive, and abort. Currently has no
+ * in-tree consumers; the canvas drives runs through ``runFlowAGUI``
+ * directly. Kept here so a future component that wants to consume a typed
+ * event stream can drop in without re-deriving the lifecycle.
+ */
+
+import { type BaseEvent } from "@ag-ui/client";
+import { useCallback, useRef, useState } from "react";
+import { Subscription } from "rxjs";
+import {
+  buildWorkflowRunRequest,
+  createWorkflowAgent,
+  type WorkflowAgentOptions,
+  type WorkflowHttpAgent,
+  type WorkflowRunOptions,
+} from "./run-agent";
+
+export interface UseRunFlowState {
+  /** All AG-UI events received so far in the current run. */
+  events: BaseEvent[];
+  /** True from the moment a run is started until it ends (success or error). */
+  isRunning: boolean;
+  /** Error from a failed run; cleared at the start of the next run. */
+  error: Error | null;
+}
+
+const INITIAL_STATE: UseRunFlowState = {
+  events: [],
+  isRunning: false,
+  error: null,
+};
+
+/** Construction overrides accepted by the hook (omits the per-run body). */
+export type UseRunFlowAgentOptions = Omit<WorkflowAgentOptions, "body">;
+
+/**
+ * Run v2 workflows from React.
+ *
+ * A fresh `WorkflowHttpAgent` is built per run because the native body is
+ * bound at construction time. Calling `run` again starts a new run
+ * (resetting `events`); `abort` stops the active run.
+ */
+export function useRunFlow(agentOptions: UseRunFlowAgentOptions = {}) {
+  const agentRef = useRef<WorkflowHttpAgent | null>(null);
+  const subRef = useRef<Subscription | null>(null);
+  const [state, setState] = useState<UseRunFlowState>(INITIAL_STATE);
+
+  const run = useCallback(
+    (opts: WorkflowRunOptions) =>
+      new Promise<void>((resolve) => {
+        // Cancel any prior in-flight run. ``abortRun`` aborts the previous
+        // agent's AbortController; without it the previous fetch is
+        // orphaned (unsubscribe only detaches the local RxJS subscriber)
+        // and keeps draining bytes until the server closes the connection.
+        subRef.current?.unsubscribe();
+        agentRef.current?.abortRun();
+        setState({ events: [], isRunning: true, error: null });
+
+        const body = buildWorkflowRunRequest(opts);
+        const agent = createWorkflowAgent({ ...agentOptions, body });
+        agentRef.current = agent;
+
+        // `agent.run` needs a `RunAgentInput` for the client-side apply
+        // pipeline; the wire body is the native `WorkflowRunRequest` set
+        // on the agent. These ids stay local — the server announces its
+        // own run/thread ids via the typed event stream.
+        const runInput = {
+          threadId: opts.threadId ?? "",
+          runId: "",
+          state: {},
+          messages: [],
+          tools: [],
+          context: [],
+          forwardedProps: {},
+        };
+
+        subRef.current = agent.run(runInput).subscribe({
+          next: (event) => {
+            setState((s) => ({ ...s, events: [...s.events, event] }));
+          },
+          error: (err: Error) => {
+            setState((s) => ({ ...s, isRunning: false, error: err }));
+            resolve();
+          },
+          complete: () => {
+            setState((s) => ({ ...s, isRunning: false }));
+            resolve();
+          },
+        });
+      }),
+    [agentOptions],
+  );
+
+  const abort = useCallback(() => {
+    subRef.current?.unsubscribe();
+    agentRef.current?.abortRun();
+    setState((s) => ({ ...s, isRunning: false }));
+  }, []);
+
+  return { ...state, run, abort };
+}
