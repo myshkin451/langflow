@@ -25,6 +25,7 @@ import ContentDisplay from "./ContentDisplay";
 import DurationDisplay from "./DurationDisplay";
 import { groupConsecutiveCitations } from "./groupCitations";
 import { SourcesStrip } from "./SourcesStrip";
+import { ToolCallCard } from "./ToolCallCard";
 import { getToolStatus, TOOL_STATUS_CLASS } from "./toolStatus";
 
 interface ContentBlockDisplayProps {
@@ -78,26 +79,41 @@ export function ContentBlockDisplay({
 
   return (
     <div className="relative py-3">
-      {/* Render flat content items directly (no accordion wrapping).
-          Consecutive citations get coalesced into a single Sources strip
-          so a list of three sources shows as one row of cards rather than
-          three stacked blocks. */}
+      {/* Render flat content items. Three routes:
+          - tool_use items get wrapped in their own collapsible card
+            (ToolCallCard) so they always carry the bordered-header
+            chrome — the agent emits them flat, not inside a group
+          - consecutive citations get coalesced into one Sources strip
+          - everything else passes through ContentDisplay directly */}
       {flatItems.length > 0 && (
         <div className="flex flex-col gap-2">
-          {groupConsecutiveCitations(flatItems).map((run) =>
-            run.kind === "sources" ? (
-              <div key={`sources-${run.index}`} className="px-4 py-2">
-                <SourcesStrip citations={run.citations} />
-              </div>
-            ) : (
+          {groupConsecutiveCitations(flatItems).map((run) => {
+            if (run.kind === "sources") {
+              return (
+                <div key={`sources-${run.index}`} className="px-4 py-2">
+                  <SourcesStrip citations={run.citations} />
+                </div>
+              );
+            }
+            if (run.item.type === "tool_use") {
+              return (
+                <ToolCallCard
+                  key={`tool-${run.index}`}
+                  content={run.item}
+                  chatId={`${chatId}-tool-${run.index}`}
+                  playgroundPage={playgroundPage}
+                />
+              );
+            }
+            return (
               <ContentDisplay
                 key={`flat-${run.index}`}
                 content={run.item}
                 chatId={`${chatId}-flat-${run.index}`}
                 playgroundPage={playgroundPage}
               />
-            ),
-          )}
+            );
+          })}
         </div>
       )}
 
