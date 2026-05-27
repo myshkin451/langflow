@@ -196,6 +196,76 @@ describe("ContentDisplay", () => {
       expect(screen.getByTestId("code-tabs")).toBeInTheDocument();
     });
 
+    it("unwraps a LangChain ToolMessage-shaped output to render only its content", () => {
+      // Backend tools return {content, name, id, tool_call_id, status} —
+      // the LangChain ToolMessage shape. The metadata is duplicated by
+      // the accordion trigger; only `content` is interesting to show.
+      const tool = {
+        type: "tool_use",
+        name: "fetch_content",
+        tool_input: {},
+        output: {
+          content: "the readable body",
+          name: "fetch_content",
+          id: "abc-123",
+          tool_call_id: "toolu_xyz",
+          status: "success",
+        },
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t-unwrap" />);
+      expect(screen.getByText(/the readable body/)).toBeInTheDocument();
+      // Plumbing metadata should not be rendered.
+      expect(screen.queryByText(/toolu_xyz/)).not.toBeInTheDocument();
+      expect(screen.queryByText(/abc-123/)).not.toBeInTheDocument();
+    });
+
+    it("routes pre-formatted string output through the code tab (not markdown)", () => {
+      // Pandas df.to_string() style output has wide column padding that
+      // markdown rendering would mangle. Detection should kick it into
+      // the monospace code-tab path instead.
+      const tool = {
+        type: "tool_use",
+        name: "df_describe",
+        tool_input: {},
+        output:
+          "                                                text                   url\n" +
+          "0  Langflow | Low-code AI builder for agentic...  https://langflow.org",
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t-pre" />);
+      expect(screen.getByTestId("code-tabs")).toBeInTheDocument();
+    });
+
+    it("hides the OUTPUT section entirely when output is null", () => {
+      // output: null still rendered a visible 'OUTPUT' eyebrow with no
+      // body. Treat null the same as undefined so the empty section
+      // doesn't render at all.
+      const tool = {
+        type: "tool_use",
+        name: "search",
+        tool_input: {},
+        output: null,
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t-null" />);
+      expect(screen.queryByText("OUTPUT")).not.toBeInTheDocument();
+    });
+
+    it("keeps the JSON block when output has extra fields beyond ToolMessage", () => {
+      // Don't unwrap if the producer added fields the user might need —
+      // could be tool-specific data the renderer shouldn't drop silently.
+      const tool = {
+        type: "tool_use",
+        name: "fetch_content",
+        tool_input: {},
+        output: {
+          content: "the body",
+          custom_field: 42,
+        },
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t-no-unwrap" />);
+      // Falls through to the JSON code block (mocked as code-tabs).
+      expect(screen.getByTestId("code-tabs")).toBeInTheDocument();
+    });
+
     it("renders an OUTPUT eyebrow when output is present", () => {
       const tool = {
         type: "tool_use",

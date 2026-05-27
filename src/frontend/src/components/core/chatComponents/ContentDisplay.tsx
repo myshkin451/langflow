@@ -10,6 +10,7 @@ import ForwardedIconComponent from "../../common/genericIconComponent";
 import SimplifiedCodeTabComponent from "../codeTabsComponent";
 import DurationDisplay from "./DurationDisplay";
 import { SourcesStrip } from "./SourcesStrip";
+import { looksPreformatted, unwrapToolMessage } from "./toolOutput";
 
 export default function ContentDisplay({
   content,
@@ -132,11 +133,23 @@ export default function ContentDisplay({
       break;
 
     case "tool_use": {
-      const formatToolOutput = (output: JSONValue) => {
-        if (output === null || output === undefined) return "";
+      // Tool output rendering routes by the *unwrapped* payload shape:
+      //   - markdown-y string  -> Markdown renderer (prose, no chrome)
+      //   - pre-formatted text -> code tab with language=text
+      //                           (monospace, contained horizontal scroll,
+      //                           built-in copy button)
+      //   - object / array     -> code tab with language=json (same)
+      // The LangChain ToolMessage envelope is unwrapped first so the
+      // readable `content` field becomes the body and the plumbing
+      // metadata (already shown by the accordion trigger) stays hidden.
+      const formatToolOutput = (raw: JSONValue) => {
+        const output = unwrapToolMessage(raw);
+        if (output === null || output === undefined) return null;
 
-        // If it's a string, render as markdown
         if (typeof output === "string") {
+          if (looksPreformatted(output)) {
+            return <SimplifiedCodeTabComponent language="text" code={output} />;
+          }
           return (
             <Markdown
               remarkPlugins={[remarkGfm]}
@@ -175,7 +188,6 @@ export default function ContentDisplay({
           );
         }
 
-        // For objects/arrays, format as JSON
         try {
           return (
             <SimplifiedCodeTabComponent
@@ -199,10 +211,17 @@ export default function ContentDisplay({
             <SectionLabel>INPUT</SectionLabel>
             <ToolInputDisplay input={toolInput} />
           </section>
-          {content.output !== undefined && (
+          {content.output !== undefined && content.output !== null && (
             <section className="flex flex-col gap-1.5">
               <SectionLabel>OUTPUT</SectionLabel>
-              <div>{formatToolOutput(content.output)}</div>
+              {/* Bound the visible height so a multi-page tool output
+                  doesn't take over the whole chat bubble. The renderers
+                  inside (SimplifiedCodeTabComponent for code/text,
+                  Markdown for prose) handle their own horizontal
+                  overflow, so we only need a vertical cap here. */}
+              <div className="max-h-96 overflow-auto rounded-md">
+                {formatToolOutput(content.output)}
+              </div>
             </section>
           )}
           {content.error != null && (
