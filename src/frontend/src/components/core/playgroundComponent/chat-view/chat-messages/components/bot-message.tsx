@@ -128,6 +128,19 @@ export const BotMessage = memo(
         ? persistedDuration
         : liveDisplayTime;
 
+    // When content_blocks carry flat TextContent items, those items hold
+    // the canonical inline position of the assistant's text relative to
+    // tool calls and other blocks. ContentBlockDisplay renders them in
+    // DOM order, so the bubble body (CustomMarkdownField with the
+    // concatenated Message.text) would otherwise paint the same text a
+    // second time at the bottom, breaking the interleaved flow. Skip the
+    // bubble body unless the user is actively editing (edit still
+    // operates on Message.text).
+    const hasContentBlockText = (chat.content_blocks ?? []).some(
+      (block) => block.type === "text",
+    );
+    const showBubbleBody = !hasContentBlockText || editMessage;
+
     return (
       <>
         <div className="w-full word-break-break-word mt-2">
@@ -200,51 +213,54 @@ export const BotMessage = memo(
                   />
                 )}
 
-                <div className="form-modal-chat-text-position flex-grow mt-2">
-                  <div className="form-modal-chat-text">
-                    <div className="flex w-full flex-col">
-                      <div
-                        className="flex w-full flex-col dark:text-white"
-                        data-testid="div-chat-message"
-                      >
+                {showBubbleBody && (
+                  <div className="form-modal-chat-text-position flex-grow mt-2">
+                    <div className="form-modal-chat-text">
+                      <div className="flex w-full flex-col">
                         <div
-                          data-testid={`chat-message-${chat.sender_name}-${chatMessage}`}
-                          className="flex w-full flex-col"
+                          className="flex w-full flex-col dark:text-white"
+                          data-testid="div-chat-message"
                         >
-                          {(chatMessage === "" || (isEmpty && !isStreaming)) &&
-                          isBuilding &&
-                          lastMessage ? (
-                            <IconComponent
-                              name="MoreHorizontal"
-                              className="h-8 w-8 animate-pulse"
-                            />
-                          ) : (
-                            <div className="w-full">
-                              {editMessage ? (
-                                <EditMessageField
-                                  key={`edit-message-${chat.id}`}
-                                  message={decodedMessage}
-                                  onEdit={handleEditMessage}
-                                  onCancel={() => setEditMessage(false)}
-                                />
-                              ) : (
-                                <>
-                                  <CustomMarkdownField
-                                    isAudioMessage={isAudioMessage}
-                                    chat={chat}
-                                    isEmpty={isEmpty && !isStreaming}
-                                    chatMessage={decodedMessage}
-                                    editedFlag={editedFlag}
+                          <div
+                            data-testid={`chat-message-${chat.sender_name}-${chatMessage}`}
+                            className="flex w-full flex-col"
+                          >
+                            {(chatMessage === "" ||
+                              (isEmpty && !isStreaming)) &&
+                            isBuilding &&
+                            lastMessage ? (
+                              <IconComponent
+                                name="MoreHorizontal"
+                                className="h-8 w-8 animate-pulse"
+                              />
+                            ) : (
+                              <div className="w-full">
+                                {editMessage ? (
+                                  <EditMessageField
+                                    key={`edit-message-${chat.id}`}
+                                    message={decodedMessage}
+                                    onEdit={handleEditMessage}
+                                    onCancel={() => setEditMessage(false)}
                                   />
-                                </>
-                              )}
-                            </div>
-                          )}
+                                ) : (
+                                  <>
+                                    <CustomMarkdownField
+                                      isAudioMessage={isAudioMessage}
+                                      chat={chat}
+                                      isEmpty={isEmpty && !isStreaming}
+                                      chatMessage={decodedMessage}
+                                      editedFlag={editedFlag}
+                                    />
+                                  </>
+                                )}
+                              </div>
+                            )}
+                          </div>
                         </div>
                       </div>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
             </div>
 

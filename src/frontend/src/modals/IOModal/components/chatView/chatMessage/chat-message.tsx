@@ -131,6 +131,19 @@ export default function ChatMessage({
   const isEmpty = decodedMessage?.trim() === "";
   const { mutate: updateMessageMutation } = useUpdateMessage();
 
+  // When content_blocks carry flat TextContent items, those items hold
+  // the canonical inline position of the assistant's text relative to
+  // tool calls and other blocks. ContentBlockDisplay renders them in
+  // DOM order, so the bubble body (CustomMarkdownField with the
+  // concatenated Message.text) would otherwise paint the same text a
+  // second time at the bottom, breaking the interleaved flow. Skip the
+  // bubble body unless the user is actively editing (edit still
+  // operates on Message.text).
+  const hasContentBlockText = (chat.content_blocks ?? []).some(
+    (block) => block.type === "text",
+  );
+  const showBubbleBody = !hasContentBlockText || editMessage;
+
   const handleEditMessage = (message: string) => {
     updateMessageMutation(
       {
@@ -322,7 +335,7 @@ export default function ChatMessage({
                 chatId={chat.id}
               />
             )}
-            {!chat.isSend ? (
+            {!chat.isSend && !showBubbleBody ? null : !chat.isSend ? (
               <div className="form-modal-chat-text-position flex-grow">
                 <div className="form-modal-chat-text">
                   {hidden && chat.thought && chat.thought !== "" && (
