@@ -646,3 +646,47 @@ class TestMessageResponseContentBlocksValidation:
         assert resp.content_blocks is not None
         assert resp.content_blocks[0].type == "text"
         assert resp.content_blocks[0].text == "Doing well, thanks!"
+
+
+class TestContentTypeExcludeUnsetPreservesDiscriminator:
+    """Regression: ContentType.model_dump(exclude_unset=True) must keep type.
+
+    aupdate_messages applies a partial-update via:
+        msg.sqlmodel_update(message.model_dump(exclude_unset=True, exclude_none=True))
+
+    If TextContent dumps to ``{"text": "..."}`` (stripping the defaulted
+    ``type`` field), the stored row's content_blocks entry has no
+    discriminator. The next read-back through MessageRead's discriminated
+    union fails with ``union_tag_not_found``, aupdate_messages raises
+    ValueError, astore_message silently falls through to aadd_messages,
+    and a duplicate row gets inserted with a new id — which the chat
+    view renders as a duplicate bubble.
+
+    The fix is in BaseContent.__init__: mark every field as set so
+    exclude_unset keeps the discriminator.
+    """
+
+    def test_text_content_keeps_type(self):
+        dump = TextContent(text="hi").model_dump(exclude_unset=True, exclude_none=True)
+        assert dump.get("type") == "text", f"missing discriminator: {dump}"
+        assert dump.get("text") == "hi"
+
+    def test_tool_content_keeps_type(self):
+        dump = ToolContent(name="search").model_dump(exclude_unset=True, exclude_none=True)
+        assert dump.get("type") == "tool_use", f"missing discriminator: {dump}"
+
+    def test_error_content_keeps_type(self):
+        dump = ErrorContent(reason="boom").model_dump(exclude_unset=True, exclude_none=True)
+        assert dump.get("type") == "error", f"missing discriminator: {dump}"
+
+    def test_content_block_group_keeps_type(self):
+        dump = ContentBlock(title="Agent Steps", contents=[]).model_dump(
+            exclude_unset=True,
+            exclude_none=True,
+        )
+        assert dump.get("type") == "group", f"missing discriminator: {dump}"
+        assert dump.get("title") == "Agent Steps"
+
+    def test_image_content_keeps_type(self):
+        dump = ImageContent(urls=["x"]).model_dump(exclude_unset=True, exclude_none=True)
+        assert dump.get("type") == "image", f"missing discriminator: {dump}"
