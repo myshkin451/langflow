@@ -143,16 +143,6 @@ describe("ContentDisplay", () => {
   });
 
   describe("tool_use", () => {
-    it("renders an eyebrow INPUT label instead of bolded markdown", () => {
-      const tool = {
-        type: "tool_use",
-        name: "search",
-        tool_input: { query: "weather" },
-      } as unknown as ContentBlockItem;
-      render(<ContentDisplay content={tool} chatId="t-t1" />);
-      expect(screen.getByText("INPUT")).toBeInTheDocument();
-    });
-
     it("reads input from the 'input' alias when the backend dumped by_alias=True", () => {
       // The Python ToolContent.tool_input field has alias="input"; AG-UI
       // and other serialization paths emit by_alias=True, so the stored
@@ -266,26 +256,34 @@ describe("ContentDisplay", () => {
       expect(screen.getByTestId("code-tabs")).toBeInTheDocument();
     });
 
-    it("renders an OUTPUT eyebrow when output is present", () => {
-      const tool = {
-        type: "tool_use",
-        name: "search",
-        tool_input: {},
-        output: "result",
-      } as unknown as ContentBlockItem;
-      render(<ContentDisplay content={tool} chatId="t-t4" />);
-      expect(screen.getByText("OUTPUT")).toBeInTheDocument();
-    });
-
-    it("renders an ERROR eyebrow when error is present", () => {
+    it("renders the error body in a destructive-toned panel", () => {
+      // No eyebrow label — the surrounding accordion already says
+      // "tool call" and the destructive bg + color carries the meaning.
       const tool = {
         type: "tool_use",
         name: "search",
         tool_input: {},
         error: "boom",
       } as unknown as ContentBlockItem;
-      render(<ContentDisplay content={tool} chatId="t-t5" />);
-      expect(screen.getByText("ERROR")).toBeInTheDocument();
+      const { container } = render(
+        <ContentDisplay content={tool} chatId="t-t-err" />,
+      );
+      // The destructive panel wraps the code tab.
+      expect(container.querySelector(".bg-destructive\\/10")).toBeTruthy();
+    });
+
+    it("renders nothing for empty input (no 'no arguments' placeholder)", () => {
+      // The surrounding accordion provides enough context; an explicit
+      // empty-state line just adds chrome. The OUTPUT below carries the
+      // useful information.
+      const tool = {
+        type: "tool_use",
+        name: "search",
+        tool_input: {},
+        output: "hi",
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t-empty-input" />);
+      expect(screen.queryByText(/no arguments/)).not.toBeInTheDocument();
     });
   });
 

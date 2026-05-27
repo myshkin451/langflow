@@ -163,7 +163,15 @@ export function ContentBlockDisplay({
           {(hideHeader || isExpanded) && (
             <div className="flex flex-col gap-2">
               <Accordion
+                // Auto-expand any tool that's still running so the user
+                // sees the in-flight call without clicking. assistant-ui's
+                // terminal variant, ai-chatbot, Claude's web UI, and
+                // ChatGPT all default to expanded-while-running and
+                // user-collapsible after settling.
                 type="multiple"
+                defaultValue={toolItems
+                  .filter(({ content }) => getToolStatus(content) === "running")
+                  .map(({ toolKey }) => toolKey)}
                 className="w-full bg-transparent flex flex-col gap-2"
               >
                 {toolItems.map(
@@ -176,15 +184,15 @@ export function ContentBlockDisplay({
                       typeof rawTitle === "string"
                         ? formatToolTitle(rawTitle)
                         : rawTitle;
-                    const isAgentStep =
-                      content.header?.icon === "GitBranch" ||
-                      (typeof content.name === "string" &&
-                        content.name.startsWith("Node "));
-                    const toolLabel = isAgentStep ? "Node" : "Called tool";
                     const toolDuration =
                       toolElapsedTimes[toolKey] ?? content.duration ?? 0;
                     const status = getToolStatus(content);
                     const dotClass = TOOL_STATUS_CLASS[status];
+                    // Drop the "Called tool" / "Node" prefix and the
+                    // bg-muted code-pill chrome — consensus across
+                    // assistant-ui, ai-chatbot, CopilotKit, Claude, and
+                    // ChatGPT is just the tool name in medium weight as
+                    // the header.
 
                     return (
                       <AccordionItem
@@ -193,8 +201,8 @@ export function ContentBlockDisplay({
                         className="border border-border rounded-lg overflow-hidden bg-background"
                       >
                         <AccordionTrigger className="hover:bg-muted hover:no-underline px-3 py-2.5">
-                          <div className="flex items-center justify-between w-full pr-2">
-                            <div className="flex items-center gap-2 text-sm font-normal min-w-0 flex-1 overflow-hidden">
+                          <div className="flex items-center justify-between w-full pr-2 gap-3">
+                            <div className="flex items-center gap-2 min-w-0 flex-1 overflow-hidden">
                               <span
                                 data-testid={`tool-status-${status}`}
                                 aria-label={`Tool ${status}`}
@@ -203,20 +211,15 @@ export function ContentBlockDisplay({
                                   dotClass,
                                 )}
                               />
-                              <div className="text-muted-foreground whitespace-nowrap flex-shrink-0">
-                                {toolLabel}{" "}
-                              </div>
-                              <div className="truncate flex-1 muted-foreground bg-muted py-1 px-1.5 rounded-sm text-xs max-w-fit">
-                                <p className="truncate font-normal font-mono">
-                                  {toolTitle}
-                                </p>
-                              </div>
+                              <p className="truncate text-sm font-medium font-mono">
+                                {toolTitle}
+                              </p>
                             </div>
-                            <div className="flex items-center gap-2">
-                              <span className="text-xs text-accent-emerald-foreground">
+                            {toolDuration > 0 && (
+                              <span className="text-xs text-muted-foreground flex-shrink-0">
                                 {formatTime(toolDuration, true)}
                               </span>
-                            </div>
+                            )}
                           </div>
                         </AccordionTrigger>
                         <AccordionContent className="pt-0">

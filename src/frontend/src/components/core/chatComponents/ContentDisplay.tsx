@@ -205,33 +205,31 @@ export default function ContentDisplay({
       // the field name, fall back to the alias so already-stored messages
       // and live AG-UI events both render their arguments.
       const toolInput = content.tool_input ?? content.input ?? {};
+      const hasInput = Object.keys(toolInput).length > 0;
+      const hasOutput = content.output !== undefined && content.output !== null;
+      const hasError = content.error != null;
+      // Eyebrow labels (INPUT/OUTPUT/ERROR) used to bracket each section,
+      // but the surrounding accordion card is already the "tool call"
+      // context — extra labels just add chrome. Match the assistant-ui /
+      // Claude pattern: args and result stack directly inside the card,
+      // separated by a hairline rule. Empty sections render nothing.
+      const showSeparator = hasInput && (hasOutput || hasError);
       contentData = (
         <div className="flex flex-col gap-3">
-          <section className="flex flex-col gap-1.5">
-            <SectionLabel>INPUT</SectionLabel>
-            <ToolInputDisplay input={toolInput} />
-          </section>
-          {content.output !== undefined && content.output !== null && (
-            <section className="flex flex-col gap-1.5">
-              <SectionLabel>OUTPUT</SectionLabel>
-              {/* Bound the visible height so a multi-page tool output
-                  doesn't take over the whole chat bubble. The renderers
-                  inside (SimplifiedCodeTabComponent for code/text,
-                  Markdown for prose) handle their own horizontal
-                  overflow, so we only need a vertical cap here. */}
-              <div className="max-h-96 overflow-auto rounded-md">
-                {formatToolOutput(content.output)}
-              </div>
-            </section>
+          {hasInput && <ToolInputDisplay input={toolInput} />}
+          {showSeparator && <div className="h-px bg-border" />}
+          {hasOutput && (
+            <div className="max-h-96 overflow-auto">
+              {formatToolOutput(content.output as JSONValue)}
+            </div>
           )}
-          {content.error != null && (
-            <section className="flex flex-col gap-1.5">
-              <SectionLabel tone="destructive">ERROR</SectionLabel>
+          {hasError && (
+            <div className="rounded-md bg-destructive/10 text-destructive">
               <SimplifiedCodeTabComponent
                 language="json"
                 code={JSON.stringify(content.error, null, 2)}
               />
-            </section>
+            </div>
           )}
         </div>
       );
@@ -418,37 +416,12 @@ export default function ContentDisplay({
   );
 }
 
-/** Small uppercase eyebrow label for grouping sections inside a content
- * renderer (INPUT / OUTPUT / ERROR on tool calls, etc.). Kept inline rather
- * than promoted to a shared primitive until a second caller appears. */
-function SectionLabel({
-  children,
-  tone,
-}: {
-  children: ReactNode;
-  tone?: "destructive";
-}) {
-  const toneClass =
-    tone === "destructive" ? "text-destructive" : "text-muted-foreground";
-  return (
-    <div
-      className={`text-[10px] font-semibold uppercase tracking-wider ${toneClass}`}
-    >
-      {children}
-    </div>
-  );
-}
-
 /** Renders a tool's input. Flat objects (string/number/bool/null values
  * only) become labelled rows; anything nested falls back to a JSON block
- * so the structure stays readable. */
+ * so the structure stays readable. Empty input is handled by the caller
+ * (the surrounding card simply skips this component). */
 function ToolInputDisplay({ input }: { input: Record<string, JSONValue> }) {
-  const entries = Object.entries(input ?? {});
-  if (entries.length === 0) {
-    return (
-      <div className="text-xs text-muted-foreground italic">no arguments</div>
-    );
-  }
+  const entries = Object.entries(input);
   // A value counts as "flat" if it's a primitive or a list of primitives.
   // Nested objects (or arrays of objects) fall through to the JSON block
   // where indentation makes them readable.
