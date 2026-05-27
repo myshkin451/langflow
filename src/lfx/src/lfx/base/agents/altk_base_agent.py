@@ -378,6 +378,10 @@ class ALTKBaseAgentComponent(AgentComponent):
             sender=MESSAGE_SENDER_AI,
             sender_name=sender_name,
             properties={"icon": "Bot", "state": "partial"},
+            # `text=""` sentinel so MessageTable's no_content check accepts
+            # an in-flight agent message whose content_blocks haven't been
+            # populated yet. Mirrors ChatInput's convention.
+            text="",
             # Flat chronological event log; see lfx.base.agents.events.
             content_blocks=[],
             session_id=session_id or uuid.uuid4(),
