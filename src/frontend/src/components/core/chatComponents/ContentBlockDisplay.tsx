@@ -47,10 +47,22 @@ export function ContentBlockDisplay({
 }: ContentBlockDisplayProps) {
   const [isExpanded, setIsExpanded] = useState(false);
 
-  // Separate flat content items from grouped blocks
-  const groupedBlocks = contentBlocks.filter(isGroupedBlock);
-  const flatItems = contentBlocks.filter(
-    (item): item is ContentType => !isGroupedBlock(item),
+  // Separate flat content items from grouped blocks. Memoize so child
+  // components (notably Radix Accordion, which collects refs per render)
+  // see stable references across re-renders. Without this, every parent
+  // render produces fresh filter() arrays, every AccordionItem looks
+  // 'new' to the collection, refs are re-registered, and Radix loops
+  // until React hits the max-update-depth guard.
+  const groupedBlocks = useMemo(
+    () => contentBlocks.filter(isGroupedBlock),
+    [contentBlocks],
+  );
+  const flatItems = useMemo(
+    () =>
+      contentBlocks.filter(
+        (item): item is ContentType => !isGroupedBlock(item),
+      ),
+    [contentBlocks],
   );
 
   // Use shared hook for tool duration tracking (only grouped blocks)
@@ -60,9 +72,7 @@ export function ContentBlockDisplay({
   );
 
   // Stabilize the Radix Accordion defaultValue so the wrapped accordion
-  // doesn't see a new array reference on every parent re-render — that
-  // re-enters the ref-collection cycle and trips React's max-update-depth
-  // guard during streaming.
+  // doesn't see a new array reference on every parent re-render.
   const runningToolKeys = useMemo(
     () =>
       toolItems
