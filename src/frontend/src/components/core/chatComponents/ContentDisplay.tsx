@@ -1,13 +1,15 @@
 import { ChevronDown } from "lucide-react";
-import { type ReactNode, useState } from "react";
+import { Fragment, type ReactNode, useState } from "react";
 import Markdown from "react-markdown";
 import rehypeMathjax from "rehype-mathjax/browser";
 import remarkGfm from "remark-gfm";
+import { formatSeconds } from "@/components/core/playgroundComponent/chat-view/chat-messages/utils/format";
 import type { ContentBlockItem, JSONValue } from "@/types/chat";
 import { extractLanguage, isCodeBlock } from "@/utils/codeBlockUtils";
 import ForwardedIconComponent from "../../common/genericIconComponent";
 import SimplifiedCodeTabComponent from "../codeTabsComponent";
 import DurationDisplay from "./DurationDisplay";
+import { SourcesStrip } from "./SourcesStrip";
 
 export default function ContentDisplay({
   content,
@@ -187,44 +189,25 @@ export default function ContentDisplay({
       };
 
       contentData = (
-        <div className="flex flex-col gap-2">
-          <Markdown
-            remarkPlugins={[remarkGfm]}
-            rehypePlugins={[rehypeMathjax]}
-            className="markdown prose max-w-full text-sm font-normal dark:prose-invert"
-          >
-            **Input:**
-          </Markdown>
-          <SimplifiedCodeTabComponent
-            language="json"
-            code={JSON.stringify(content.tool_input, null, 2)}
-          />
+        <div className="flex flex-col gap-3">
+          <section className="flex flex-col gap-1.5">
+            <SectionLabel>INPUT</SectionLabel>
+            <ToolInputDisplay input={content.tool_input} />
+          </section>
           {content.output !== undefined && (
-            <>
-              <Markdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeMathjax]}
-                className="markdown prose max-w-full text-sm font-normal dark:prose-invert"
-              >
-                **Output:**
-              </Markdown>
-              <div className="mt-1">{formatToolOutput(content.output)}</div>
-            </>
+            <section className="flex flex-col gap-1.5">
+              <SectionLabel>OUTPUT</SectionLabel>
+              <div>{formatToolOutput(content.output)}</div>
+            </section>
           )}
           {content.error != null && (
-            <div className="text-destructive">
-              <Markdown
-                remarkPlugins={[remarkGfm]}
-                rehypePlugins={[rehypeMathjax]}
-                className="markdown prose max-w-full text-sm font-normal dark:prose-invert"
-              >
-                **Error:**
-              </Markdown>
+            <section className="flex flex-col gap-1.5">
+              <SectionLabel tone="destructive">ERROR</SectionLabel>
               <SimplifiedCodeTabComponent
                 language="json"
                 code={JSON.stringify(content.error, null, 2)}
               />
-            </div>
+            </section>
           )}
         </div>
       );
@@ -343,7 +326,9 @@ export default function ContentDisplay({
       break;
 
     case "reasoning":
-      contentData = <ReasoningDisplay text={content.text} />;
+      contentData = (
+        <ReasoningDisplay text={content.text} duration={content.duration} />
+      );
       break;
 
     case "usage": {
@@ -372,29 +357,10 @@ export default function ContentDisplay({
     }
 
     case "citation":
-      contentData = (
-        <div className="flex flex-col gap-1 text-sm">
-          {content.url ? (
-            <a
-              href={content.url}
-              target="_blank"
-              rel="noopener noreferrer"
-              className="underline text-primary hover:text-primary/80"
-            >
-              {content.title || content.url}
-            </a>
-          ) : (
-            content.title && (
-              <span className="font-medium">{content.title}</span>
-            )
-          )}
-          {content.cited_text && (
-            <blockquote className="border-l-2 border-muted-foreground/30 pl-3 text-xs text-muted-foreground italic">
-              {content.cited_text}
-            </blockquote>
-          )}
-        </div>
-      );
+      // Single citation renders as a one-card Sources strip; consecutive
+      // flat citations are coalesced into a multi-card strip by
+      // ContentBlockDisplay before they reach this branch.
+      contentData = <SourcesStrip citations={[content]} />;
       break;
 
     case "group":
@@ -428,24 +394,102 @@ export default function ContentDisplay({
   );
 }
 
-/** Collapsible "Thinking" section for reasoning content. */
-function ReasoningDisplay({ text }: { text: string }) {
+/** Small uppercase eyebrow label for grouping sections inside a content
+ * renderer (INPUT / OUTPUT / ERROR on tool calls, etc.). Kept inline rather
+ * than promoted to a shared primitive until a second caller appears. */
+function SectionLabel({
+  children,
+  tone,
+}: {
+  children: ReactNode;
+  tone?: "destructive";
+}) {
+  const toneClass =
+    tone === "destructive" ? "text-destructive" : "text-muted-foreground";
+  return (
+    <div
+      className={`text-[10px] font-semibold uppercase tracking-wider ${toneClass}`}
+    >
+      {children}
+    </div>
+  );
+}
+
+/** Renders a tool's input. Flat objects (string/number/bool/null values
+ * only) become labelled rows; anything nested falls back to a JSON block
+ * so the structure stays readable. */
+function ToolInputDisplay({ input }: { input: Record<string, JSONValue> }) {
+  const entries = Object.entries(input ?? {});
+  if (entries.length === 0) {
+    return (
+      <div className="text-xs text-muted-foreground italic">no arguments</div>
+    );
+  }
+  const isFlat = entries.every(([, v]) => v === null || typeof v !== "object");
+  if (!isFlat) {
+    return (
+      <SimplifiedCodeTabComponent
+        language="json"
+        code={JSON.stringify(input, null, 2)}
+      />
+    );
+  }
+  return (
+    <dl className="grid grid-cols-[auto_1fr] gap-x-3 gap-y-1 text-xs">
+      {entries.map(([key, value]) => (
+        <Fragment key={key}>
+          <dt className="font-mono text-muted-foreground">{key}</dt>
+          <dd className="font-mono break-all">{JSON.stringify(value)}</dd>
+        </Fragment>
+      ))}
+    </dl>
+  );
+}
+
+/** Reasoning section. Live shimmer while streaming, collapsible summary once
+ * the producer attaches a `duration` (its signal that the step is done). */
+function ReasoningDisplay({
+  text,
+  duration,
+}: {
+  text: string;
+  duration?: number;
+}) {
   const [isOpen, setIsOpen] = useState(false);
+  const isStreaming = duration === undefined;
+
+  if (isStreaming) {
+    return (
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground">
+        <ForwardedIconComponent
+          name="Sparkles"
+          className="h-3 w-3"
+          aria-hidden
+        />
+        <span className="animate-pulse">Thinking…</span>
+      </div>
+    );
+  }
 
   return (
     <div className="flex flex-col gap-1">
       <button
         type="button"
         onClick={() => setIsOpen((prev) => !prev)}
-        className="flex items-center gap-1 text-xs text-muted-foreground hover:text-foreground"
+        className="flex items-center gap-1.5 text-xs text-muted-foreground hover:text-foreground w-fit"
       >
+        <ForwardedIconComponent
+          name="Sparkles"
+          className="h-3 w-3"
+          aria-hidden
+        />
+        <span>Thought for {formatSeconds(duration)}</span>
         <ChevronDown
           className={`h-3 w-3 transition-transform ${isOpen ? "rotate-180" : ""}`}
         />
-        Thinking
       </button>
       {isOpen && (
-        <div className="pl-4 text-xs text-muted-foreground whitespace-pre-wrap border-l-2 border-muted-foreground/20">
+        <div className="ml-1 pl-3 text-xs text-muted-foreground whitespace-pre-wrap border-l-2 border-muted-foreground/20 italic">
           {text}
         </div>
       )}

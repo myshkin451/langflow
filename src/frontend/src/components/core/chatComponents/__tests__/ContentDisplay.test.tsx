@@ -113,6 +113,140 @@ describe("ContentDisplay", () => {
     });
   });
 
+  describe("reasoning", () => {
+    it("shows a 'Thinking…' shimmer while the duration is absent", () => {
+      // No duration on the content means the producer is still emitting
+      // reasoning chunks. The renderer should show a live indicator
+      // rather than the resolved summary.
+      const reasoning = {
+        type: "reasoning",
+        text: "Considering options...",
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={reasoning} chatId="t-r1" />);
+      const label = screen.getByText(/Thinking/i);
+      expect(label).toBeInTheDocument();
+      // Live label gets animate-pulse so the user sees it as in-flight.
+      expect(label.className).toMatch(/animate-pulse/);
+    });
+
+    it("collapses by default with a 'Thought for …' summary when duration is set", () => {
+      const reasoning = {
+        type: "reasoning",
+        text: "I checked the docs and decided to call the weather tool.",
+        duration: 3200,
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={reasoning} chatId="t-r2" />);
+      expect(screen.getByText(/Thought for/)).toBeInTheDocument();
+      // Body stays collapsed until the user clicks the summary trigger.
+      expect(screen.queryByText(/I checked the docs/)).not.toBeInTheDocument();
+    });
+  });
+
+  describe("tool_use", () => {
+    it("renders an eyebrow INPUT label instead of bolded markdown", () => {
+      const tool = {
+        type: "tool_use",
+        name: "search",
+        tool_input: { query: "weather" },
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t1" />);
+      expect(screen.getByText("INPUT")).toBeInTheDocument();
+    });
+
+    it("renders flat input as key/value rows, not JSON", () => {
+      // {query: "weather", units: "metric"} is a flat object — easier to
+      // scan as two rows than as JSON with braces and quotes.
+      const tool = {
+        type: "tool_use",
+        name: "weather",
+        tool_input: { query: "weather", units: "metric" },
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t2" />);
+      expect(screen.getByText("query")).toBeInTheDocument();
+      expect(screen.getByText('"weather"')).toBeInTheDocument();
+      expect(screen.getByText("units")).toBeInTheDocument();
+      expect(screen.getByText('"metric"')).toBeInTheDocument();
+      // No JSON code block for the flat case.
+      expect(screen.queryByTestId("code-tabs")).not.toBeInTheDocument();
+    });
+
+    it("falls back to JSON block when input has nested values", () => {
+      // Nested object would be ugly in row form — code block keeps it
+      // readable and copyable.
+      const tool = {
+        type: "tool_use",
+        name: "search",
+        tool_input: { filters: { min: 1, max: 10 } },
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t3" />);
+      expect(screen.getByTestId("code-tabs")).toBeInTheDocument();
+    });
+
+    it("renders an OUTPUT eyebrow when output is present", () => {
+      const tool = {
+        type: "tool_use",
+        name: "search",
+        tool_input: {},
+        output: "result",
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t4" />);
+      expect(screen.getByText("OUTPUT")).toBeInTheDocument();
+    });
+
+    it("renders an ERROR eyebrow when error is present", () => {
+      const tool = {
+        type: "tool_use",
+        name: "search",
+        tool_input: {},
+        error: "boom",
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t5" />);
+      expect(screen.getByText("ERROR")).toBeInTheDocument();
+    });
+  });
+
+  describe("citation", () => {
+    it("renders the domain extracted from the URL alongside the title", () => {
+      const citation = {
+        type: "citation",
+        url: "https://docs.python.org/3/library/typing.html",
+        title: "typing — Support for type hints",
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={citation} chatId="t-c1" />);
+      expect(screen.getByText(/docs\.python\.org/)).toBeInTheDocument();
+      expect(
+        screen.getByText("typing — Support for type hints"),
+      ).toBeInTheDocument();
+    });
+
+    it("does not render an anchor for non-http URLs (sanitization)", () => {
+      // javascript: and other non-http(s) schemes must never become a
+      // clickable link; we degrade to a text-only card instead.
+      const citation = {
+        type: "citation",
+        url: "javascript:alert(1)",
+        title: "bad",
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={citation} chatId="t-c2" />);
+      expect(screen.queryByRole("link")).not.toBeInTheDocument();
+      expect(screen.getByText("bad")).toBeInTheDocument();
+    });
+
+    it("renders the cited_text snippet as plain text, not HTML", () => {
+      // The cited_text comes from upstream model output and may contain
+      // angle brackets. React text nodes escape them, so the literal
+      // characters render rather than parsing as markup.
+      const citation = {
+        type: "citation",
+        url: "https://example.com",
+        title: "src",
+        cited_text: "<script>alert(1)</script>",
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={citation} chatId="t-c3" />);
+      expect(screen.getByText("<script>alert(1)</script>")).toBeInTheDocument();
+    });
+  });
+
   describe("group", () => {
     it("renders the title and recurses through nested contents", () => {
       // Nested ContentBlock inside another container: previously fell

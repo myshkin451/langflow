@@ -23,6 +23,9 @@ import {
 } from "../../ui/accordion";
 import ContentDisplay from "./ContentDisplay";
 import DurationDisplay from "./DurationDisplay";
+import { groupConsecutiveCitations } from "./groupCitations";
+import { SourcesStrip } from "./SourcesStrip";
+import { getToolStatus, TOOL_STATUS_CLASS } from "./toolStatus";
 
 interface ContentBlockDisplayProps {
   contentBlocks: ContentBlockItem[];
@@ -75,17 +78,26 @@ export function ContentBlockDisplay({
 
   return (
     <div className="relative py-3">
-      {/* Render flat content items directly (no accordion wrapping) */}
+      {/* Render flat content items directly (no accordion wrapping).
+          Consecutive citations get coalesced into a single Sources strip
+          so a list of three sources shows as one row of cards rather than
+          three stacked blocks. */}
       {flatItems.length > 0 && (
         <div className="flex flex-col gap-2">
-          {flatItems.map((item, idx) => (
-            <ContentDisplay
-              key={`flat-${idx}`}
-              content={item}
-              chatId={`${chatId}-flat-${idx}`}
-              playgroundPage={playgroundPage}
-            />
-          ))}
+          {groupConsecutiveCitations(flatItems).map((run) =>
+            run.kind === "sources" ? (
+              <div key={`sources-${run.index}`} className="px-4 py-2">
+                <SourcesStrip citations={run.citations} />
+              </div>
+            ) : (
+              <ContentDisplay
+                key={`flat-${run.index}`}
+                content={run.item}
+                chatId={`${chatId}-flat-${run.index}`}
+                playgroundPage={playgroundPage}
+              />
+            ),
+          )}
         </div>
       )}
 
@@ -171,6 +183,8 @@ export function ContentBlockDisplay({
                     const toolLabel = isAgentStep ? "Node" : "Called tool";
                     const toolDuration =
                       toolElapsedTimes[toolKey] ?? content.duration ?? 0;
+                    const status = getToolStatus(content);
+                    const dotClass = TOOL_STATUS_CLASS[status];
 
                     return (
                       <AccordionItem
@@ -180,7 +194,15 @@ export function ContentBlockDisplay({
                       >
                         <AccordionTrigger className="hover:bg-muted hover:no-underline px-3 py-2.5">
                           <div className="flex items-center justify-between w-full pr-2">
-                            <div className="flex items-center gap-1 text-sm font-normal min-w-0 flex-1 overflow-hidden">
+                            <div className="flex items-center gap-2 text-sm font-normal min-w-0 flex-1 overflow-hidden">
+                              <span
+                                data-testid={`tool-status-${status}`}
+                                aria-label={`Tool ${status}`}
+                                className={cn(
+                                  "h-1.5 w-1.5 rounded-full flex-shrink-0",
+                                  dotClass,
+                                )}
+                              />
                               <div className="text-muted-foreground whitespace-nowrap flex-shrink-0">
                                 {toolLabel}{" "}
                               </div>
