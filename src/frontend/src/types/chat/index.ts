@@ -25,7 +25,7 @@ export type ChatMessageType = {
   icon?: string;
   category?: string;
   properties?: PropertiesType;
-  content_blocks?: ContentBlock[];
+  content_blocks?: ContentBlockItem[];
 };
 
 export type SourceType = {
@@ -85,11 +85,19 @@ export type FlowPoolObjectType = {
 // Base content type
 export interface BaseContent {
   type: string;
+  // Optional stable identity carried across re-emissions of the same logical
+  // block. Set by producers that have a natural id (e.g. LangChain
+  // tool_call_id). Consumers fall back to position-derived dedup when absent.
+  id?: string;
   duration?: number;
   header?: {
     title?: string;
     icon?: string;
   };
+  // Nested content. Leaf types leave this empty; container-shaped types
+  // (ContentBlock, multimodal ToolContent, multi-step ReasoningContent)
+  // populate it.
+  contents?: ContentType[];
 }
 
 // Individual content types
@@ -133,6 +141,59 @@ export interface ToolContent extends BaseContent {
   error?: JSONValue | string;
 }
 
+export interface ImageContent extends BaseContent {
+  type: "image";
+  urls?: string[];
+  base64?: string;
+  mime_type?: string;
+  caption?: string;
+}
+
+export interface AudioContent extends BaseContent {
+  type: "audio";
+  urls?: string[];
+  base64?: string;
+  mime_type?: string;
+  duration?: number;
+  transcript?: string;
+}
+
+export interface VideoContent extends BaseContent {
+  type: "video";
+  urls?: string[];
+  base64?: string;
+  mime_type?: string;
+  duration?: number;
+}
+
+export interface FileContent extends BaseContent {
+  type: "file";
+  urls?: string[];
+  mime_type?: string;
+  filename?: string;
+}
+
+export interface ReasoningContent extends BaseContent {
+  type: "reasoning";
+  text: string;
+}
+
+export interface UsageContent extends BaseContent {
+  type: "usage";
+  input_tokens?: number;
+  output_tokens?: number;
+  model?: string;
+}
+
+export interface CitationContent extends BaseContent {
+  type: "citation";
+  url?: string;
+  title?: string;
+  cited_text?: string;
+  start_index?: number;
+  end_index?: number;
+}
+
 // Union type for all content types
 export type ContentType =
   | ErrorContent
@@ -140,16 +201,29 @@ export type ContentType =
   | MediaContent
   | JSONContent
   | CodeContent
-  | ToolContent;
+  | ToolContent
+  | ImageContent
+  | AudioContent
+  | VideoContent
+  | FileContent
+  | ReasoningContent
+  | UsageContent
+  | CitationContent;
 
-// Updated ContentBlock interface
+// A titled group of nested contents. Matches the backend's ContentBlock,
+// which is a member of the ContentType discriminated union with tag "group".
 export interface ContentBlock {
+  type: "group";
   title: string;
   contents: ContentType[];
   allow_markdown: boolean;
   media_url?: string[];
-  component: string;
+  // Legacy field kept for backwards compatibility with older callers.
+  component?: string;
 }
+
+// A content block item can be either a grouped ContentBlock or a flat ContentType
+export type ContentBlockItem = ContentType | ContentBlock;
 
 export interface PlaygroundEvent {
   event_type: "message" | "error" | "warning" | "info" | "token";
@@ -158,7 +232,7 @@ export interface PlaygroundEvent {
   allow_markdown?: boolean;
   icon?: string | null;
   sender_name: string;
-  content_blocks?: ContentBlock[] | null;
+  content_blocks?: ContentBlockItem[] | null;
   files?: string[];
   text?: string;
   timestamp?: string;
