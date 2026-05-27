@@ -212,11 +212,15 @@ export type ContentType =
 
 // A titled group of nested contents. Matches the backend's ContentBlock,
 // which is a member of the ContentType discriminated union with tag "group".
-export interface ContentBlock {
+// Extends BaseContent so it inherits id/header/duration alongside the
+// group-specific fields.
+export interface ContentBlock extends BaseContent {
   type: "group";
   title: string;
   contents: ContentType[];
-  allow_markdown: boolean;
+  // Optional to match the backend default (True) and to tolerate hand-built
+  // or legacy payloads that don't include the field.
+  allow_markdown?: boolean;
   media_url?: string[];
   // Legacy field kept for backwards compatibility with older callers.
   component?: string;
@@ -224,6 +228,19 @@ export interface ContentBlock {
 
 // A content block item can be either a grouped ContentBlock or a flat ContentType
 export type ContentBlockItem = ContentType | ContentBlock;
+
+// Type guard for grouped ContentBlock items. Prefers the discriminator
+// `type === "group"` (new payloads) but falls back to a structural check so
+// legacy ContentBlock dicts persisted before the discriminator existed
+// (no `type` field, only title + contents) are still classified as groups.
+export function isGroupedBlock(item: ContentBlockItem): item is ContentBlock {
+  if (item.type === "group") return true;
+  return (
+    "title" in item &&
+    "contents" in item &&
+    Array.isArray((item as { contents?: unknown }).contents)
+  );
+}
 
 export interface PlaygroundEvent {
   event_type: "message" | "error" | "warning" | "info" | "token";

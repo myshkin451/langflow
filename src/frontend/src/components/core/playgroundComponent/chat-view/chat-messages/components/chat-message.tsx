@@ -1,15 +1,10 @@
 import { useEffect, useState } from "react";
 import useFlowStore from "@/stores/flowStore";
-import type { ContentBlock, ContentBlockItem } from "@/types/chat";
+import { isGroupedBlock } from "@/types/chat";
 import type { chatMessagePropsType } from "@/types/components";
 import { BotMessage } from "./bot-message";
 import { ErrorView } from "./error-message";
 import { UserMessage } from "./user-message";
-
-/** Type guard: returns true for grouped ContentBlock items (type "group"). */
-function isGroupedBlock(item: ContentBlockItem): item is ContentBlock {
-  return item.type === "group";
-}
 
 export default function ChatMessage({
   chat,

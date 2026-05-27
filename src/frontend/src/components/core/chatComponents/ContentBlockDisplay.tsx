@@ -8,7 +8,11 @@ import {
   formatTime,
   formatToolTitle,
 } from "@/components/core/playgroundComponent/chat-view/chat-messages/utils/format";
-import type { ContentBlock, ContentBlockItem, ContentType } from "@/types/chat";
+import {
+  type ContentBlockItem,
+  type ContentType,
+  isGroupedBlock,
+} from "@/types/chat";
 import { cn } from "@/utils/utils";
 import ForwardedIconComponent from "../../common/genericIconComponent";
 import {
@@ -19,11 +23,6 @@ import {
 } from "../../ui/accordion";
 import ContentDisplay from "./ContentDisplay";
 import DurationDisplay from "./DurationDisplay";
-
-/** Type guard: returns true for grouped ContentBlock items (type "group"). */
-function isGroupedBlock(item: ContentBlockItem): item is ContentBlock {
-  return item.type === "group";
-}
 
 interface ContentBlockDisplayProps {
   contentBlocks: ContentBlockItem[];

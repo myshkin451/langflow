@@ -255,7 +255,9 @@ export default function ContentDisplay({
               className="max-w-full rounded"
             />
           ))}
-          {content.base64 && (
+          {/* base64 is a fallback for when no URL is provided; avoid
+              rendering the same image twice when both shapes are present. */}
+          {!content.urls?.length && content.base64 && (
             <img
               src={`data:${content.mime_type || "image/png"};base64,${content.base64}`}
               alt={content.caption || "Image"}
@@ -277,7 +279,7 @@ export default function ContentDisplay({
               <source src={url} type={content.mime_type} />
             </audio>
           ))}
-          {content.base64 && (
+          {!content.urls?.length && content.base64 && (
             <audio controls className="w-full">
               <source
                 src={`data:${content.mime_type || "audio/mpeg"};base64,${content.base64}`}
@@ -302,7 +304,7 @@ export default function ContentDisplay({
               <source src={url} type={content.mime_type} />
             </video>
           ))}
-          {content.base64 && (
+          {!content.urls?.length && content.base64 && (
             <video controls className="max-w-full rounded">
               <source
                 src={`data:${content.mime_type || "video/mp4"};base64,${content.base64}`}
@@ -341,28 +343,34 @@ export default function ContentDisplay({
       contentData = <ReasoningDisplay text={content.text} />;
       break;
 
-    case "usage":
+    case "usage": {
+      const hasTokens =
+        content.input_tokens !== undefined ||
+        content.output_tokens !== undefined;
       contentData = (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {content.model && (
             <span className="font-medium">{content.model}</span>
           )}
-          <span>
-            Tokens:{" "}
-            {content.input_tokens !== undefined
-              ? `${content.input_tokens} in`
-              : ""}
-            {content.input_tokens !== undefined &&
-            content.output_tokens !== undefined
-              ? " / "
-              : ""}
-            {content.output_tokens !== undefined
-              ? `${content.output_tokens} out`
-              : ""}
-          </span>
+          {hasTokens && (
+            <span>
+              Tokens:{" "}
+              {content.input_tokens !== undefined
+                ? `${content.input_tokens} in`
+                : ""}
+              {content.input_tokens !== undefined &&
+              content.output_tokens !== undefined
+                ? " / "
+                : ""}
+              {content.output_tokens !== undefined
+                ? `${content.output_tokens} out`
+                : ""}
+            </span>
+          )}
         </div>
       );
       break;
+    }
 
     case "citation":
       contentData = (

@@ -1,19 +1,20 @@
 import Convert from "ansi-to-html";
 import { useEffect, useRef, useState } from "react";
-import { ContentBlockDisplay } from "@/components/core/chatComponents/ContentBlockDisplay";
+import { useTranslation } from "react-i18next";
 import MessageMetadata from "@/components/common/messageMetadataComponent";
+import { ContentBlockDisplay } from "@/components/core/chatComponents/ContentBlockDisplay";
 import { useUpdateMessage } from "@/controllers/API/queries/messages";
 import { CustomMarkdownField } from "@/customization/components/custom-markdown-field";
 import { CustomProfileIcon } from "@/customization/components/custom-profile-icon";
 import { ENABLE_DATASTAX_LANGFLOW } from "@/customization/feature-flags";
 import useFlowStore from "@/stores/flowStore";
 import useFlowsManagerStore from "@/stores/flowsManagerStore";
+import { isGroupedBlock } from "@/types/chat";
 import Robot from "../../../../../assets/robot.png";
 import IconComponent, {
   ForwardedIconComponent,
 } from "../../../../../components/common/genericIconComponent";
 import SanitizedHTMLWrapper from "../../../../../components/common/sanitizedHTMLWrapper";
-import { useTranslation } from "react-i18next";
 import useAlertStore from "../../../../../stores/alertStore";
 import type { chatMessagePropsType } from "../../../../../types/components";
 import { cn } from "../../../../../utils/utils";
@@ -191,7 +192,10 @@ export default function ChatMessage({
   ) : null;
 
   if (chat.category === "error") {
-    const blocks = chat.content_blocks ?? [];
+    // ErrorView walks block.contents on each entry, so filter to the grouped
+    // ContentBlock shape (it has `contents`). Flat ContentType items can now
+    // also appear in content_blocks and would otherwise crash ErrorView.
+    const blocks = (chat.content_blocks ?? []).filter(isGroupedBlock);
 
     return (
       <ErrorView
