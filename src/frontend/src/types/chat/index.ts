@@ -137,7 +137,12 @@ export interface CodeContent extends BaseContent {
 export interface ToolContent extends BaseContent {
   type: "tool_use";
   name?: string;
-  tool_input: Record<string, JSONValue>;
+  // The backend serializes this field as `tool_input` by default but
+  // emits it under the `input` alias when AG-UI / any other path runs
+  // model_dump with by_alias=True. Accept both shapes; renderers should
+  // prefer `tool_input` and fall back to `input`.
+  tool_input?: Record<string, JSONValue>;
+  input?: Record<string, JSONValue>;
   output?: JSONValue;
   error?: JSONValue | string;
 }

@@ -153,6 +153,20 @@ describe("ContentDisplay", () => {
       expect(screen.getByText("INPUT")).toBeInTheDocument();
     });
 
+    it("reads input from the 'input' alias when the backend dumped by_alias=True", () => {
+      // The Python ToolContent.tool_input field has alias="input"; AG-UI
+      // and other serialization paths emit by_alias=True, so the stored
+      // shape uses `input` not `tool_input`. Renderer must fall back.
+      const tool = {
+        type: "tool_use",
+        name: "fetch_content",
+        input: { urls: ["https://langflow.org"] },
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-t-alias" />);
+      expect(screen.getByText("urls")).toBeInTheDocument();
+      expect(screen.queryByText(/no arguments/)).not.toBeInTheDocument();
+    });
+
     it("renders flat input as key/value rows, not JSON", () => {
       // {query: "weather", units: "metric"} is a flat object — easier to
       // scan as two rows than as JSON with braces and quotes.

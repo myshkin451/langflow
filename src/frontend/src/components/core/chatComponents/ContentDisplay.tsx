@@ -188,11 +188,16 @@ export default function ContentDisplay({
         }
       };
 
+      // Backend serializes ToolContent.tool_input under its alias `input`
+      // when by_alias=True (AG-UI emission, certain dump paths). Prefer
+      // the field name, fall back to the alias so already-stored messages
+      // and live AG-UI events both render their arguments.
+      const toolInput = content.tool_input ?? content.input ?? {};
       contentData = (
         <div className="flex flex-col gap-3">
           <section className="flex flex-col gap-1.5">
             <SectionLabel>INPUT</SectionLabel>
-            <ToolInputDisplay input={content.tool_input} />
+            <ToolInputDisplay input={toolInput} />
           </section>
           {content.output !== undefined && (
             <section className="flex flex-col gap-1.5">
@@ -425,7 +430,13 @@ function ToolInputDisplay({ input }: { input: Record<string, JSONValue> }) {
       <div className="text-xs text-muted-foreground italic">no arguments</div>
     );
   }
-  const isFlat = entries.every(([, v]) => v === null || typeof v !== "object");
+  // A value counts as "flat" if it's a primitive or a list of primitives.
+  // Nested objects (or arrays of objects) fall through to the JSON block
+  // where indentation makes them readable.
+  const isPrimitive = (v: JSONValue) => v === null || typeof v !== "object";
+  const isFlat = entries.every(
+    ([, v]) => isPrimitive(v) || (Array.isArray(v) && v.every(isPrimitive)),
+  );
   if (!isFlat) {
     return (
       <SimplifiedCodeTabComponent
