@@ -1,7 +1,7 @@
 "use client";
 import { motion } from "framer-motion";
 import { ChevronDown } from "lucide-react";
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import { BorderTrail } from "@/components/core/border-trail";
 import { useToolDurations } from "@/components/core/playgroundComponent/chat-view/chat-messages/hooks/use-tool-durations";
 import {
@@ -57,6 +57,18 @@ export function ContentBlockDisplay({
   const { toolElapsedTimes, toolItems } = useToolDurations(
     groupedBlocks.length > 0 ? groupedBlocks : undefined,
     isLoading ?? false,
+  );
+
+  // Stabilize the Radix Accordion defaultValue so the wrapped accordion
+  // doesn't see a new array reference on every parent re-render — that
+  // re-enters the ref-collection cycle and trips React's max-update-depth
+  // guard during streaming.
+  const runningToolKeys = useMemo(
+    () =>
+      toolItems
+        .filter(({ content }) => getToolStatus(content) === "running")
+        .map(({ toolKey }) => toolKey),
+    [toolItems],
   );
 
   if (!toolItems.length && !flatItems.length) {
@@ -185,9 +197,7 @@ export function ContentBlockDisplay({
                 // ChatGPT all default to expanded-while-running and
                 // user-collapsible after settling.
                 type="multiple"
-                defaultValue={toolItems
-                  .filter(({ content }) => getToolStatus(content) === "running")
-                  .map(({ toolKey }) => toolKey)}
+                defaultValue={runningToolKeys}
                 className="w-full bg-transparent flex flex-col gap-2"
               >
                 {toolItems.map(
