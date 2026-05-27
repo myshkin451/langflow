@@ -5,11 +5,9 @@ from time import perf_counter
 from typing import Any, Protocol
 
 from langchain_core.agents import AgentFinish
-from langchain_core.messages import AIMessageChunk, BaseMessage
-from typing_extensions import TypedDict
+from langchain_core.messages import AIMessageChunk
 
-from lfx.schema.content_block import ContentBlock
-from lfx.schema.content_types import TextContent, ToolContent
+from lfx.schema.content_types import ToolContent
 from lfx.schema.log import OnTokenFunctionType, SendMessageFunctionType
 from lfx.schema.message import Message
 
@@ -28,16 +26,6 @@ class ExceptionWithMessageError(Exception):
         )
 
 
-class InputDict(TypedDict):
-    input: str
-    chat_history: list[BaseMessage]
-
-
-def _build_agent_input_text_content(agent_input_dict: InputDict) -> str:
-    final_input = agent_input_dict.get("input", "")
-    return f"{final_input}"
-
-
 def _calculate_duration(start_time: float) -> int:
     """Calculate duration in milliseconds from start time to now."""
     # Handle the calculation
@@ -54,42 +42,20 @@ def _calculate_duration(start_time: float) -> int:
 
 
 async def handle_on_chain_start(
-    event: dict[str, Any],
+    event: dict[str, Any],  # noqa: ARG001
     agent_message: Message,
-    send_message_callback: SendMessageFunctionType,
+    send_message_callback: SendMessageFunctionType,  # noqa: ARG001
     send_token_callback: OnTokenFunctionType | None,  # noqa: ARG001
     start_time: float,
     *,
     had_streaming: bool = False,  # noqa: ARG001
     message_id: str | None = None,  # noqa: ARG001
 ) -> tuple[Message, float]:
-    # Create content blocks if they don't exist
-    if not agent_message.content_blocks:
-        agent_message.content_blocks = [ContentBlock(title="Agent Steps", contents=[])]
-
-    if event["data"].get("input"):
-        input_data = event["data"].get("input")
-        if isinstance(input_data, dict) and "input" in input_data:
-            # Cast the input_data to InputDict
-            input_message = input_data.get("input", "")
-            if isinstance(input_message, BaseMessage):
-                input_message = input_message.text()
-            elif not isinstance(input_message, str):
-                input_message = str(input_message)
-
-            input_dict: InputDict = {
-                "input": input_message,
-                "chat_history": input_data.get("chat_history", []),
-            }
-            text_content = TextContent(
-                type="text",
-                text=_build_agent_input_text_content(input_dict),
-                duration=_calculate_duration(start_time),
-                header={"title": "Input", "icon": "MessageSquare"},
-            )
-            agent_message.content_blocks[0].contents.append(text_content)
-            agent_message = await send_message_callback(message=agent_message, skip_db_update=True)
-            start_time = perf_counter()
+    # No-op. The synthetic "Input" TextContent that used to live inside the
+    # "Agent Steps" group is gone in the flat content_blocks design — the
+    # user message is already rendered above the agent's reply, so echoing
+    # it back as a content block was duplicative. content_blocks is now a
+    # chronological event log, populated by the tool / chain handlers below.
     return agent_message, start_time
 
 
@@ -162,18 +128,12 @@ async def handle_on_chain_end(
     if data_output and isinstance(data_output, AgentFinish) and data_output.return_values.get("output"):
         output = data_output.return_values.get("output")
 
+        # Assigning to `message.text` triggers the setter, which appends a
+        # TextContent at the end of content_blocks. No need to push a
+        # synthetic "Output" TextContent ourselves -- doing so would
+        # duplicate the final text.
         agent_message.text = _extract_output_text(output)
         agent_message.properties.state = "complete"
-        # Add duration to the last content if it exists
-        if agent_message.content_blocks:
-            duration = _calculate_duration(start_time)
-            text_content = TextContent(
-                type="text",
-                text=agent_message.text,
-                duration=duration,
-                header={"title": "Output", "icon": "MessageSquare"},
-            )
-            agent_message.content_blocks[0].contents.append(text_content)
 
         # Only send final message if we didn't have streaming chunks
         # If we had streaming, frontend already accumulated the chunks
@@ -195,9 +155,8 @@ async def handle_on_tool_start(
     run_id = event.get("run_id", "")
     tool_key = f"{tool_name}_{run_id}"
 
-    # Create content blocks if they don't exist
-    if not agent_message.content_blocks:
-        agent_message.content_blocks = [ContentBlock(title="Agent Steps", contents=[])]
+    if agent_message.content_blocks is None:
+        agent_message.content_blocks = []
 
     duration = _calculate_duration(start_time)
     new_start_time = perf_counter()  # Get new start time for next operation
@@ -213,13 +172,16 @@ async def handle_on_tool_start(
         duration=duration,  # Store the actual duration
     )
 
-    # Store in map and append to message
+    # Append flat into the chronological content_blocks list and remember the
+    # reference for handle_on_tool_end to update once the tool returns.
     tool_blocks_map[tool_key] = tool_content
-    agent_message.content_blocks[0].contents.append(tool_content)
+    agent_message.content_blocks.append(tool_content)
 
     agent_message = await send_message_callback(message=agent_message, skip_db_update=True)
-    if agent_message.content_blocks and agent_message.content_blocks[0].contents:
-        tool_blocks_map[tool_key] = agent_message.content_blocks[0].contents[-1]
+    # Re-anchor the map to the persisted instance (send_message_callback may
+    # have copied the message; the appended ToolContent is the last item).
+    if agent_message.content_blocks and isinstance(agent_message.content_blocks[-1], ToolContent):
+        tool_blocks_map[tool_key] = agent_message.content_blocks[-1]
     return agent_message, new_start_time
 
 
@@ -240,21 +202,21 @@ async def handle_on_tool_end(
         agent_message = await send_message_callback(message=agent_message, skip_db_update=True)
         new_start_time = perf_counter()
 
-        # Now find and update the tool content in the current message
+        # Now find and update the tool content in the current message. With
+        # flat content_blocks we walk the list directly instead of indexing
+        # into a single group's .contents.
         duration = _calculate_duration(start_time)
-        tool_key = f"{tool_name}_{run_id}"
 
-        # Find the corresponding tool content in the updated message
         updated_tool_content = None
-        if agent_message.content_blocks and agent_message.content_blocks[0].contents:
-            for content in agent_message.content_blocks[0].contents:
-                if (
-                    isinstance(content, ToolContent)
-                    and content.name == tool_name
-                    and content.tool_input == tool_content.tool_input
-                ):
-                    updated_tool_content = content
-                    break
+        for content in agent_message.content_blocks or []:
+            if (
+                isinstance(content, ToolContent)
+                and content.name == tool_name
+                and content.tool_input == tool_content.tool_input
+                and content.output is None
+            ):
+                updated_tool_content = content
+                break
 
         # Update the tool content that's actually in the message
         if updated_tool_content:
@@ -335,7 +297,7 @@ class ToolEventHandler(Protocol):
         self,
         event: dict[str, Any],
         agent_message: Message,
-        tool_blocks_map: dict[str, ContentBlock],
+        tool_blocks_map: dict[str, ToolContent],
         send_message_callback: SendMessageFunctionType,
         start_time: float,
     ) -> tuple[Message, float]: ...
