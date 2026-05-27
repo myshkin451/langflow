@@ -128,18 +128,32 @@ export const BotMessage = memo(
         ? persistedDuration
         : liveDisplayTime;
 
-    // When content_blocks carry flat TextContent items, those items hold
-    // the canonical inline position of the assistant's text relative to
-    // tool calls and other blocks. ContentBlockDisplay renders them in
-    // DOM order, so the bubble body (CustomMarkdownField with the
-    // concatenated Message.text) would otherwise paint the same text a
-    // second time at the bottom, breaking the interleaved flow. Skip the
-    // bubble body unless the user is actively editing (edit still
-    // operates on Message.text).
-    const hasContentBlockText = (chat.content_blocks ?? []).some(
-      (block) => block.type === "text",
+    // The renderer is data-driven, but content_blocks shows up in two
+    // shapes:
+    //   - Legacy: an "Agent Steps" group wraps the tool calls (and the
+    //     legacy agent also appends a flat TextContent at the top that
+    //     duplicates Message.text). Render the group via the accordion
+    //     and let CustomMarkdownField paint Message.text below — the
+    //     historical "tools on top, text after" layout.
+    //   - Interleaved (post agent-events rewiring): no group, just flat
+    //     tool_use / citation / text items in producer order. Trust the
+    //     content_blocks order and suppress the bubble body so text
+    //     doesn't double-paint.
+    // The signal is: a flat non-text block (tool_use, citation, …) with
+    // no group present means the producer is making an ordering claim.
+    const contentBlocks = chat.content_blocks ?? [];
+    const hasGroup = contentBlocks.some((block) => block.type === "group");
+    const hasFlatNonText = contentBlocks.some(
+      (block) => block.type !== "group" && block.type !== "text",
     );
-    const showBubbleBody = !hasContentBlockText || editMessage;
+    const useContentBlockOrdering = !hasGroup && hasFlatNonText;
+    const showBubbleBody = !useContentBlockOrdering || editMessage;
+    // In legacy / pure-text mode, strip the top-level TextContent before
+    // handing the array to ContentBlockDisplay — those items duplicate
+    // Message.text and would render above the grouped accordion.
+    const displayedContentBlocks = useContentBlockOrdering
+      ? contentBlocks
+      : contentBlocks.filter((block) => block.type !== "text");
 
     return (
       <>
@@ -197,11 +211,11 @@ export const BotMessage = memo(
                   </span>
                 </div>
 
-                {((chat.content_blocks && chat.content_blocks.length > 0) ||
+                {(displayedContentBlocks.length > 0 ||
                   (isBuilding && lastMessage)) && (
                   <ContentBlockDisplay
                     playgroundPage={playgroundPage}
-                    contentBlocks={chat.content_blocks || []}
+                    contentBlocks={displayedContentBlocks}
                     isLoading={getContentBlockLoadingState(
                       chat,
                       isBuilding,
