@@ -3,7 +3,7 @@ import { type ReactNode, useState } from "react";
 import Markdown from "react-markdown";
 import rehypeMathjax from "rehype-mathjax/browser";
 import remarkGfm from "remark-gfm";
-import type { ContentType, JSONValue } from "@/types/chat";
+import type { ContentBlockItem, JSONValue } from "@/types/chat";
 import { extractLanguage, isCodeBlock } from "@/utils/codeBlockUtils";
 import ForwardedIconComponent from "../../common/genericIconComponent";
 import SimplifiedCodeTabComponent from "../codeTabsComponent";
@@ -14,7 +14,9 @@ export default function ContentDisplay({
   chatId,
   playgroundPage,
 }: {
-  content: ContentType;
+  // Accept any ContentBlockItem so nested ContentBlock groups land in the
+  // `case "group"` branch below instead of falling through to no rendering.
+  content: ContentBlockItem;
   chatId: string;
   playgroundPage?: boolean;
 }) {
@@ -255,9 +257,10 @@ export default function ContentDisplay({
               className="max-w-full rounded"
             />
           ))}
-          {/* base64 is a fallback for when no URL is provided; avoid
-              rendering the same image twice when both shapes are present. */}
-          {!content.urls?.length && content.base64 && (
+          {/* base64 is a fallback for when no usable URL is provided.
+              `some(Boolean)` so urls=[""] or urls=[null] don't suppress the
+              fallback while rendering a broken <img src=""> above. */}
+          {!content.urls?.some(Boolean) && content.base64 && (
             <img
               src={`data:${content.mime_type || "image/png"};base64,${content.base64}`}
               alt={content.caption || "Image"}
@@ -279,7 +282,7 @@ export default function ContentDisplay({
               <source src={url} type={content.mime_type} />
             </audio>
           ))}
-          {!content.urls?.length && content.base64 && (
+          {!content.urls?.some(Boolean) && content.base64 && (
             <audio controls className="w-full">
               <source
                 src={`data:${content.mime_type || "audio/mpeg"};base64,${content.base64}`}
@@ -304,7 +307,7 @@ export default function ContentDisplay({
               <source src={url} type={content.mime_type} />
             </video>
           ))}
-          {!content.urls?.length && content.base64 && (
+          {!content.urls?.some(Boolean) && content.base64 && (
             <video controls className="max-w-full rounded">
               <source
                 src={`data:${content.mime_type || "video/mp4"};base64,${content.base64}`}
@@ -344,9 +347,13 @@ export default function ContentDisplay({
       break;
 
     case "usage": {
-      const hasTokens =
-        content.input_tokens !== undefined ||
-        content.output_tokens !== undefined;
+      // Backend serializes Optional[int] as JSON null, so `!= null` catches
+      // both undefined and null. Using `!== undefined` here would render the
+      // literal string "null in / null out" when the producer reports no
+      // counts.
+      const hasInput = content.input_tokens != null;
+      const hasOutput = content.output_tokens != null;
+      const hasTokens = hasInput || hasOutput;
       contentData = (
         <div className="flex items-center gap-2 text-xs text-muted-foreground">
           {content.model && (
@@ -354,17 +361,9 @@ export default function ContentDisplay({
           )}
           {hasTokens && (
             <span>
-              Tokens:{" "}
-              {content.input_tokens !== undefined
-                ? `${content.input_tokens} in`
-                : ""}
-              {content.input_tokens !== undefined &&
-              content.output_tokens !== undefined
-                ? " / "
-                : ""}
-              {content.output_tokens !== undefined
-                ? `${content.output_tokens} out`
-                : ""}
+              Tokens: {hasInput ? `${content.input_tokens} in` : ""}
+              {hasInput && hasOutput ? " / " : ""}
+              {hasOutput ? `${content.output_tokens} out` : ""}
             </span>
           )}
         </div>
@@ -394,6 +393,28 @@ export default function ContentDisplay({
               {content.cited_text}
             </blockquote>
           )}
+        </div>
+      );
+      break;
+
+    case "group":
+      // A nested ContentBlock inside another container. Render the title as
+      // a small section header and recurse on each child. The outer
+      // ContentBlockDisplay handles top-level groups; this branch only
+      // fires when a producer nests a group inside a parent's contents.
+      contentData = (
+        <div className="flex flex-col gap-2">
+          {content.title && (
+            <p className="text-sm font-medium text-primary">{content.title}</p>
+          )}
+          {content.contents?.map((child, index) => (
+            <ContentDisplay
+              key={index}
+              content={child}
+              chatId={`${chatId}-${index}`}
+              playgroundPage={playgroundPage}
+            />
+          ))}
         </div>
       );
       break;

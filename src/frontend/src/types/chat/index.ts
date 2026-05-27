@@ -96,8 +96,9 @@ export interface BaseContent {
   };
   // Nested content. Leaf types leave this empty; container-shaped types
   // (ContentBlock, multimodal ToolContent, multi-step ReasoningContent)
-  // populate it.
-  contents?: ContentType[];
+  // populate it. Typed as ContentBlockItem so nested ContentBlock groups
+  // are allowed, matching the backend's discriminated union.
+  contents?: ContentBlockItem[];
 }
 
 // Individual content types
@@ -217,7 +218,7 @@ export type ContentType =
 export interface ContentBlock extends BaseContent {
   type: "group";
   title: string;
-  contents: ContentType[];
+  contents: ContentBlockItem[];
   // Optional to match the backend default (True) and to tolerate hand-built
   // or legacy payloads that don't include the field.
   allow_markdown?: boolean;
@@ -230,11 +231,16 @@ export interface ContentBlock extends BaseContent {
 export type ContentBlockItem = ContentType | ContentBlock;
 
 // Type guard for grouped ContentBlock items. Prefers the discriminator
-// `type === "group"` (new payloads) but falls back to a structural check so
-// legacy ContentBlock dicts persisted before the discriminator existed
-// (no `type` field, only title + contents) are still classified as groups.
+// `type === "group"` (new payloads). Falls back to a structural check ONLY
+// when `type` is absent, so legacy ContentBlock dicts persisted before the
+// discriminator existed (no `type`, only title + contents) are still
+// classified as groups. The fallback must not fire on flat ContentType
+// items that happen to carry a `title` (CodeContent, CitationContent) and
+// an empty inherited `contents: []` -- backend BaseContent serializes
+// contents on every item, so the type check is what keeps them out.
 export function isGroupedBlock(item: ContentBlockItem): item is ContentBlock {
   if (item.type === "group") return true;
+  if (item.type) return false;
   return (
     "title" in item &&
     "contents" in item &&
