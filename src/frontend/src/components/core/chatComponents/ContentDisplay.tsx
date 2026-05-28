@@ -10,7 +10,7 @@ import ForwardedIconComponent from "../../common/genericIconComponent";
 import SimplifiedCodeTabComponent from "../codeTabsComponent";
 import DurationDisplay from "./DurationDisplay";
 import { SourcesStrip } from "./SourcesStrip";
-import { looksPreformatted, unwrapToolMessage } from "./toolOutput";
+import { ToolOutputDisplay } from "./ToolOutputDisplay";
 
 export default function ContentDisplay({
   content,
@@ -138,72 +138,12 @@ export default function ContentDisplay({
       break;
 
     case "tool_use": {
-      // Tool output rendering routes by the *unwrapped* payload shape:
-      //   - markdown-y string  -> Markdown renderer (prose, no chrome)
-      //   - pre-formatted text -> code tab with language=text
-      //                           (monospace, contained horizontal scroll,
-      //                           built-in copy button)
-      //   - object / array     -> code tab with language=json (same)
-      // The LangChain ToolMessage envelope is unwrapped first so the
-      // readable `content` field becomes the body and the plumbing
-      // metadata (already shown by the accordion trigger) stays hidden.
-      const formatToolOutput = (raw: JSONValue) => {
-        const output = unwrapToolMessage(raw);
-        if (output === null || output === undefined) return null;
-
-        if (typeof output === "string") {
-          if (looksPreformatted(output)) {
-            return <SimplifiedCodeTabComponent language="text" code={output} />;
-          }
-          return (
-            <Markdown
-              remarkPlugins={[remarkGfm]}
-              rehypePlugins={[rehypeMathjax]}
-              className="markdown prose max-w-full text-sm font-normal dark:prose-invert"
-              components={{
-                pre({ node, ...props }) {
-                  return <>{props.children}</>;
-                },
-                ol({ node, ...props }) {
-                  return <ol className="max-w-full">{props.children}</ol>;
-                },
-                ul({ node, ...props }) {
-                  return <ul className="max-w-full">{props.children}</ul>;
-                },
-                code: ({ node, className, children, ...props }) => {
-                  const content = String(children);
-                  if (isCodeBlock(className, props, content)) {
-                    return (
-                      <SimplifiedCodeTabComponent
-                        language={extractLanguage(className)}
-                        code={content.replace(/\n$/, "")}
-                      />
-                    );
-                  }
-                  return (
-                    <code className={className} {...props}>
-                      {children}
-                    </code>
-                  );
-                },
-              }}
-            >
-              {output}
-            </Markdown>
-          );
-        }
-
-        try {
-          return (
-            <SimplifiedCodeTabComponent
-              language="json"
-              code={JSON.stringify(output, null, 2)}
-            />
-          );
-        } catch {
-          return String(output);
-        }
-      };
+      // Tool output rendering lives in ToolOutputDisplay — it routes by
+      // shape (markdown string / preformatted text / object) and, when
+      // the producer hands us a LangChain ToolMessage envelope with
+      // non-standard metadata (additional_kwargs, response_metadata,
+      // artifact, ...), surfaces it under a 2-tab UI so the readable
+      // content stays primary and the plumbing is one click away.
 
       // Backend serializes ToolContent.tool_input under its alias `input`
       // when by_alias=True (AG-UI emission, certain dump paths). Prefer
@@ -230,9 +170,7 @@ export default function ContentDisplay({
           {hasInput && <ToolInputDisplay input={toolInput} />}
           {showSeparator && <div className="h-px bg-border" />}
           {hasOutput && (
-            <div className="max-h-96 overflow-auto">
-              {formatToolOutput(content.output as JSONValue)}
-            </div>
+            <ToolOutputDisplay output={content.output as JSONValue} />
           )}
           {hasError && (
             <div className="rounded-md bg-destructive/10 text-destructive">
