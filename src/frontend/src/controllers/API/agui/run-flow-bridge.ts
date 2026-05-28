@@ -119,6 +119,8 @@ export function applyStateDelta(
   ops: JsonPatchOp[],
   runId: string,
   nodeIds: Set<string>,
+  flowId?: string,
+  sessionId?: string,
 ): void {
   const flowStore = useFlowStore.getState();
   for (const op of ops) {
@@ -171,7 +173,7 @@ export function applyStateDelta(
       // does not propagate ``build_duration`` from the backend, so this
       // is the only path that sets it for v2 runs.
       if (value.status === "success") {
-        stampSegmentDurationForOutputNode(nodeId);
+        stampSegmentDurationForOutputNode(nodeId, flowId, sessionId);
       }
     }
   }
@@ -181,14 +183,20 @@ export function applyStateDelta(
  * If ``nodeId`` is an output-type node, compute the time since the
  * flow's ``buildStartTime`` and persist it as ``build_duration`` on the
  * last bot message in the matching React Query cache (and the Zustand
- * fallback used by the shareable playground). Resets ``buildStartTime``
- * so the next segment is measured fresh.
+ * fallback used by the shareable playground). ``flowId``/``sessionId`` scope
+ * the lookup to the running session so the duration can't land on a bot
+ * message from a different session's cache. Resets ``buildStartTime`` so the
+ * next segment is measured fresh.
  *
  * Mirrors the per-vertex segment logic in ``buildUtils.ts`` so the v2
  * AG-UI bridge produces the same on-message metadata the v1 build
  * callbacks do.
  */
-function stampSegmentDurationForOutputNode(nodeId: string): void {
+function stampSegmentDurationForOutputNode(
+  nodeId: string,
+  flowId?: string,
+  sessionId?: string,
+): void {
   const flowState = useFlowStore.getState();
   const node = flowState.nodes.find((n) => n.id === nodeId);
   const nodeType = node?.data?.type as string | undefined;
@@ -197,7 +205,7 @@ function stampSegmentDurationForOutputNode(nodeId: string): void {
   }
   const segmentDurationMs = Date.now() - flowState.buildStartTime;
 
-  const found = findLastBotMessage();
+  const found = findLastBotMessage(flowId, sessionId);
   if (found && !found.message.properties?.build_duration) {
     updateMessageProperties(found.message.id!, found.queryKey, {
       build_duration: segmentDurationMs,
@@ -332,7 +340,8 @@ export async function runFlowAGUI(
     setRunId: (r) => {
       runId = r;
     },
-    applyDelta: (ops) => applyStateDelta(ops, runId, touchedNodeIds),
+    applyDelta: (ops) =>
+      applyStateDelta(ops, runId, touchedNodeIds, opts.flowId, opts.threadId),
     handleCustomEvent: (eventType, data) => handleMessageEvent(eventType, data),
     onFinished: () => {
       terminalEventSeen = true;

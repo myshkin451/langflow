@@ -142,6 +142,33 @@ describe("ContentDisplay", () => {
     });
   });
 
+  describe("renderDuration", () => {
+    it("renders the top-right duration for a non-reasoning block", () => {
+      const tool = {
+        type: "tool_use",
+        name: "search",
+        tool_input: {},
+        duration: 1200,
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={tool} chatId="t-d1" />);
+      expect(screen.getByTestId("duration")).toBeInTheDocument();
+    });
+
+    it("skips the top-right duration for reasoning to avoid double render", () => {
+      // ReasoningDisplay already surfaces the duration inline as
+      // "Thought for Xs"; the absolute top-right DurationDisplay must be
+      // skipped for reasoning so it doesn't render twice.
+      const reasoning = {
+        type: "reasoning",
+        text: "Decided to call the weather tool.",
+        duration: 3200,
+      } as unknown as ContentBlockItem;
+      render(<ContentDisplay content={reasoning} chatId="t-d2" />);
+      expect(screen.getByText(/Thought for/)).toBeInTheDocument();
+      expect(screen.queryByTestId("duration")).not.toBeInTheDocument();
+    });
+  });
+
   describe("tool_use", () => {
     it("reads input from the 'input' alias when the backend dumped by_alias=True", () => {
       // The Python ToolContent.tool_input field has alias="input"; AG-UI
@@ -237,6 +264,22 @@ describe("ContentDisplay", () => {
       } as unknown as ContentBlockItem;
       render(<ContentDisplay content={tool} chatId="t-t-null" />);
       expect(screen.queryByText("OUTPUT")).not.toBeInTheDocument();
+    });
+
+    it("hides the output section when output is an empty string", () => {
+      // An empty (or whitespace-only) string output used to render an empty
+      // bordered box. Treat it as no output so nothing renders. The output
+      // box is the only `.max-h-96 overflow-auto` element here.
+      const tool = {
+        type: "tool_use",
+        name: "search",
+        tool_input: {},
+        output: "   ",
+      } as unknown as ContentBlockItem;
+      const { container } = render(
+        <ContentDisplay content={tool} chatId="t-t-empty-out" />,
+      );
+      expect(container.querySelector(".max-h-96")).toBeNull();
     });
 
     it("keeps the JSON block when output has extra fields beyond ToolMessage", () => {

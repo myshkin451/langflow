@@ -1,3 +1,4 @@
+import { useEffect, useState } from "react";
 import {
   formatTime,
   formatToolTitle,
@@ -40,11 +41,24 @@ export function ToolCallCard({
   const toolDuration = content.duration ?? 0;
   const itemKey = chatId;
 
+  // Controlled open state. Radix reads ``defaultValue`` only once at mount,
+  // so a card that mounts collapsed and later flips to running (history
+  // replay, scrollback) never auto-expands. Drive ``value`` from state and
+  // open on the running transition; the deps guard means a user collapse
+  // while the tool is still running isn't re-opened on the next render.
+  const [value, setValue] = useState(status === "running" ? itemKey : "");
+  useEffect(() => {
+    if (status === "running") {
+      setValue(itemKey);
+    }
+  }, [status, itemKey]);
+
   return (
     <Accordion
       type="single"
       collapsible
-      defaultValue={status === "running" ? itemKey : undefined}
+      value={value}
+      onValueChange={setValue}
       className="w-full"
     >
       <AccordionItem

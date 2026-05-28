@@ -23,11 +23,16 @@ export default function ContentDisplay({
   chatId: string;
   playgroundPage?: boolean;
 }) {
-  const renderDuration = content.duration !== undefined && !playgroundPage && (
-    <div className="absolute right-2 top-4">
-      <DurationDisplay duration={content.duration} chatId={chatId} />
-    </div>
-  );
+  // Reasoning blocks surface their own duration inline via ReasoningDisplay's
+  // "Thought for Xs" label, so skip the absolute top-right DurationDisplay
+  // there to avoid rendering the same duration twice.
+  const renderDuration = content.duration !== undefined &&
+    content.type !== "reasoning" &&
+    !playgroundPage && (
+      <div className="absolute right-2 top-4">
+        <DurationDisplay duration={content.duration} chatId={chatId} />
+      </div>
+    );
 
   // Then render the specific content based on type
   let contentData: ReactNode | null = null;
@@ -206,7 +211,13 @@ export default function ContentDisplay({
       // and live AG-UI events both render their arguments.
       const toolInput = content.tool_input ?? content.input ?? {};
       const hasInput = Object.keys(toolInput).length > 0;
-      const hasOutput = content.output !== undefined && content.output !== null;
+      // Treat an empty (or whitespace-only) string as "no output" so it
+      // doesn't render an empty bordered box. Legitimate falsy outputs like
+      // 0 or false still render through formatToolOutput.
+      const hasOutput =
+        content.output !== undefined &&
+        content.output !== null &&
+        !(typeof content.output === "string" && content.output.trim() === "");
       const hasError = content.error != null;
       // Eyebrow labels (INPUT/OUTPUT/ERROR) used to bracket each section,
       // but the surrounding accordion card is already the "tool call"

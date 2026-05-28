@@ -332,8 +332,12 @@ describe("applyStateDelta", () => {
 
     beforeEach(() => {
       const { useMessagesStore } = require("@/stores/messagesStore");
+      const { queryClient } = require("@/contexts");
       useMessagesStore.setState({ messages: [] });
       useFlowStore.setState({ nodes: [], buildStartTime: null });
+      // Clear the React Query messages cache so the scoping test below
+      // doesn't leak seeded sessions into the Zustand-fallback tests.
+      queryClient.clear();
     });
 
     it("stamps build_duration on the last bot message when an output node finishes successfully", () => {
@@ -424,6 +428,62 @@ describe("applyStateDelta", () => {
       const { useMessagesStore } = require("@/stores/messagesStore");
       const msg = useMessagesStore.getState().messages[0];
       expect(msg.properties.build_duration).toBe(999);
+    });
+
+    it("scopes the stamp to the running session, not another session's cache", () => {
+      // D1 regression: the bot-message lookup must be scoped to the running
+      // flow/session. The unscoped form walked every messages cache and could
+      // stamp build_duration onto a bot message from a different session the
+      // user had open in the same tab.
+      const { queryClient } = require("@/contexts");
+      const MESSAGES_QUERY_KEY = "useGetMessagesQuery";
+      const botMsg = (id: string) => ({
+        id,
+        sender: "Machine",
+        sender_name: "AI",
+        text: "hi",
+        files: [],
+        timestamp: "2026-05-28T00:00:00Z",
+        properties: {} as Record<string, unknown>,
+        content_blocks: [],
+        category: "message",
+      });
+      const otherKey = [
+        MESSAGES_QUERY_KEY,
+        { id: "f1", session_id: "other-session" },
+      ];
+      const runningKey = [
+        MESSAGES_QUERY_KEY,
+        { id: "f1", session_id: "running-session" },
+      ];
+      queryClient.setQueryData(otherKey, [botMsg("other-msg")]);
+      queryClient.setQueryData(runningKey, [botMsg("running-msg")]);
+
+      seedFlow([{ id: OUTPUT_NODE_ID, type: "ChatOutput" }]);
+      useFlowStore.setState({ buildStartTime: Date.now() - 1500 });
+
+      applyStateDelta(
+        [
+          {
+            op: "add",
+            path: `/nodes/${OUTPUT_NODE_ID}`,
+            value: { status: "success", output: { results: {} } },
+          },
+        ],
+        "run-1",
+        new Set<string>(),
+        "f1",
+        "running-session",
+      );
+
+      const running = queryClient.getQueryData(runningKey) as Array<{
+        properties: { build_duration?: number };
+      }>;
+      const other = queryClient.getQueryData(otherKey) as Array<{
+        properties: { build_duration?: number };
+      }>;
+      expect(running[0].properties.build_duration).toBeGreaterThanOrEqual(1500);
+      expect(other[0].properties.build_duration).toBeUndefined();
     });
   });
 });

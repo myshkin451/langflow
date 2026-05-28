@@ -149,14 +149,24 @@ export default function ChatMessage({
   const hasFlatNonText = contentBlocks.some(
     (block) => block.type !== "group" && block.type !== "text",
   );
+  const hasTextBlock = contentBlocks.some((block) => block.type === "text");
   const useContentBlockOrdering = !hasGroup && hasFlatNonText;
-  const showBubbleBody = !useContentBlockOrdering || editMessage;
-  // In legacy / pure-text mode, strip the top-level TextContent before
-  // handing the array to ContentBlockDisplay — those items duplicate
-  // Message.text and would render above the grouped accordion.
+  // Suppress the bubble body only when the content blocks actually carry
+  // the answer text. If a producer emits only flat tool_use / citation
+  // items (no TextContent) and stuffs the answer into Message.text, keep
+  // the bubble body so the assistant text isn't hidden.
+  const showBubbleBody =
+    !useContentBlockOrdering || editMessage || !hasTextBlock;
+  // In legacy / pure-text mode, strip a top-level TextContent only when it
+  // duplicates Message.text — those items would render above the grouped
+  // accordion. A divergent text block (text !== Message.text) is kept so it
+  // isn't silently dropped.
   const displayedContentBlocks = useContentBlockOrdering
     ? contentBlocks
-    : contentBlocks.filter((block) => block.type !== "text");
+    : contentBlocks.filter(
+        (block) =>
+          block.type !== "text" || block.text !== chat.message?.toString(),
+      );
 
   const handleEditMessage = (message: string) => {
     updateMessageMutation(

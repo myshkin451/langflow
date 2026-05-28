@@ -90,7 +90,7 @@ export function SourcesStrip({ citations }: { citations: CitationContent[] }) {
       <div className="flex flex-row gap-2 overflow-x-auto pb-1">
         {citations.map((citation, idx) => (
           <SourceCard
-            key={citation.id ?? `${citation.url ?? "src"}-${idx}`}
+            key={`${citation.id ?? citation.url ?? "src"}-${idx}`}
             citation={citation}
           />
         ))}

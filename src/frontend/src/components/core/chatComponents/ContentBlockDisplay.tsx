@@ -1,7 +1,7 @@
 "use client";
 import { motion } from "framer-motion";
 import { ChevronDown } from "lucide-react";
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { BorderTrail } from "@/components/core/border-trail";
 import { useToolDurations } from "@/components/core/playgroundComponent/chat-view/chat-messages/hooks/use-tool-durations";
 import {
@@ -80,6 +80,27 @@ export function ContentBlockDisplay({
         .map(({ toolKey }) => toolKey),
     [toolItems],
   );
+
+  // Controlled open state for the tools accordion. Radix only reads
+  // ``defaultValue`` once at mount, so a tool that mounts or flips to
+  // running *after* the first render never auto-expands. Seed with the
+  // keys running at mount, then add any key that *newly* enters the
+  // running state. We only auto-open on the running transition (diffed
+  // against the previous set), never re-open, so a user collapse via
+  // ``onValueChange`` stays collapsed even while the tool is still running.
+  const [openToolKeys, setOpenToolKeys] = useState<string[]>(runningToolKeys);
+  const prevRunningKeysRef = useRef<string[]>(runningToolKeys);
+  useEffect(() => {
+    const newlyRunning = runningToolKeys.filter(
+      (key) => !prevRunningKeysRef.current.includes(key),
+    );
+    if (newlyRunning.length > 0) {
+      setOpenToolKeys((prev) =>
+        Array.from(new Set([...prev, ...newlyRunning])),
+      );
+    }
+    prevRunningKeysRef.current = runningToolKeys;
+  }, [runningToolKeys]);
 
   if (!toolItems.length && !flatItems.length) {
     return null;
@@ -205,9 +226,12 @@ export function ContentBlockDisplay({
                 // sees the in-flight call without clicking. assistant-ui's
                 // terminal variant, ai-chatbot, Claude's web UI, and
                 // ChatGPT all default to expanded-while-running and
-                // user-collapsible after settling.
+                // user-collapsible after settling. Controlled (not
+                // ``defaultValue``) so tools that start running after mount
+                // also auto-expand.
                 type="multiple"
-                defaultValue={runningToolKeys}
+                value={openToolKeys}
+                onValueChange={setOpenToolKeys}
                 className="w-full bg-transparent flex flex-col gap-2"
               >
                 {toolItems.map(

@@ -35,13 +35,17 @@ export function unwrapToolMessage(output: JSONValue): JSONValue {
  * render in a monospace <pre> block with horizontal scroll instead.
  *
  * Heuristics, any one fires:
- *  - 4+ consecutive spaces on at least one line (column padding)
+ *  - 4+ spaces after non-space content on a line (interior column padding)
  *  - a line longer than 120 chars (long log line or wide table row)
  *  - tab characters (very rare in markdown, common in tool output)
  */
 export function looksPreformatted(s: string): boolean {
   if (s.includes("\t")) return true;
-  if (/ {4,}/.test(s)) return true;
+  // Interior column padding (4+ spaces after non-space content on a line)
+  // signals a fixed-width table or aligned output. A *leading* run of 4+
+  // spaces is just a CommonMark indented code block, which should still go
+  // through the markdown renderer, so require a preceding non-space char.
+  if (/\S {4,}/.test(s)) return true;
   const longestLine = s.split("\n").reduce((m, l) => Math.max(m, l.length), 0);
   return longestLine > 120;
 }

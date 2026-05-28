@@ -68,4 +68,19 @@ describe("looksPreformatted", () => {
   it("leaves short markdown alone", () => {
     expect(looksPreformatted("**Result:** the answer is 42")).toBe(false);
   });
+
+  it("ignores leading-indent CommonMark code blocks", () => {
+    // 4-space-indented lines are a CommonMark indented code block. The old
+    // `/ {4,}/` heuristic tripped on the leading run and forced the whole
+    // output into a monospace block; markdown should still render here.
+    const s =
+      "Here is the code:\n\n    const x = 1;\n    const y = 2;\n\nDone.";
+    expect(looksPreformatted(s)).toBe(false);
+  });
+
+  it("still flags interior column padding (table alignment)", () => {
+    // 4+ spaces AFTER content on a line is genuine column alignment that
+    // markdown would mangle.
+    expect(looksPreformatted("name    value\nfoo     42")).toBe(true);
+  });
 });
