@@ -2,6 +2,7 @@ import {
   buildWorkflowRunRequest,
   createWorkflowAgent,
   WORKFLOWS_ENDPOINT,
+  WORKFLOWS_PUBLIC_ENDPOINT,
 } from "../run-agent";
 
 describe("buildWorkflowRunRequest", () => {
@@ -342,5 +343,53 @@ describe("createWorkflowAgent wire body", () => {
     } finally {
       fetchSpy.mockRestore();
     }
+  });
+});
+
+describe("buildWorkflowRunRequest — public endpoint shape", () => {
+  // The public-flow endpoint's Pydantic schema has ``extra="forbid"``
+  // and explicitly omits ``data`` and ``tweaks``. Sending either would
+  // 422 the request. Pin the dropping behaviour here so a regression in
+  // the bridge surfaces in the unit suite, not as a CI playwright fail.
+
+  it("drops tweaks when usePublicEndpoint is true", () => {
+    const body = buildWorkflowRunRequest({
+      flowId: "11111111-1111-1111-1111-111111111111",
+      message: "hi",
+      tweaks: { "node-id": { input_value: "x" } },
+      usePublicEndpoint: true,
+    });
+
+    expect(body.tweaks).toBeUndefined();
+  });
+
+  it("drops flowData when usePublicEndpoint is true", () => {
+    const body = buildWorkflowRunRequest({
+      flowId: "11111111-1111-1111-1111-111111111111",
+      message: "hi",
+      flowData: { nodes: [], edges: [] },
+      usePublicEndpoint: true,
+    });
+
+    expect(body.data).toBeUndefined();
+  });
+
+  it("still includes tweaks/data when usePublicEndpoint is false (canvas path)", () => {
+    const body = buildWorkflowRunRequest({
+      flowId: "11111111-1111-1111-1111-111111111111",
+      message: "hi",
+      tweaks: { "node-id": { input_value: "x" } },
+      flowData: { nodes: [], edges: [] },
+      usePublicEndpoint: false,
+    });
+
+    expect(body.tweaks).toEqual({ "node-id": { input_value: "x" } });
+    expect(body.data).toEqual({ nodes: [], edges: [] });
+  });
+});
+
+describe("WORKFLOWS_PUBLIC_ENDPOINT", () => {
+  it("is the canonical /api/v2/workflows/public path", () => {
+    expect(WORKFLOWS_PUBLIC_ENDPOINT).toBe("/api/v2/workflows/public");
   });
 });

@@ -22,6 +22,7 @@ import type {
 import {
   buildWorkflowRunRequest,
   createWorkflowAgent,
+  WORKFLOWS_PUBLIC_ENDPOINT,
   type WorkflowRunOptions,
 } from "./run-agent";
 
@@ -171,8 +172,18 @@ export function applyStateDelta(
 export async function runFlowAGUI(
   opts: WorkflowRunOptions & { signal?: AbortSignal },
 ): Promise<void> {
-  const body = buildWorkflowRunRequest(opts);
-  const agent = createWorkflowAgent({ body });
+  // The shareable-playground popup posts on behalf of a visitor that
+  // does not own the flow. Route those runs to the public endpoint so
+  // the backend applies the public-access mitigations (virtual_flow_id,
+  // session namespacing, file-path validation, owner impersonation).
+  // The canvas's regular runs keep going to ``/api/v2/workflows``.
+  const usePublicEndpoint =
+    opts.usePublicEndpoint ?? useFlowStore.getState().playgroundPage;
+  const body = buildWorkflowRunRequest({ ...opts, usePublicEndpoint });
+  const agent = createWorkflowAgent({
+    body,
+    url: usePublicEndpoint ? WORKFLOWS_PUBLIC_ENDPOINT : undefined,
+  });
   // Replace the agent's internal AbortController with one tied to the
   // caller's signal so an upstream stop also aborts the SSE fetch. Without
   // this, the agent owns its own controller and the stream keeps running

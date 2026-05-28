@@ -499,6 +499,7 @@ async def _stream_event_frames(
     background_tasks: BackgroundTasks,
     parsed: ParsedWorkflowRun,
     current_user: UserRead,
+    source_flow_id: UUID | None = None,
 ) -> AsyncIterator[tuple[bytes, str]]:
     """Run a flow via the v1 build-vertex loop, dispatch its events through ``adapter``.
 
@@ -558,6 +559,7 @@ async def _stream_event_frames(
                 log_builds=False,
                 current_user=current_user,
                 flow_name=flow_name,
+                source_flow_id=source_flow_id,
             )
         except asyncio.CancelledError:
             raise

@@ -192,6 +192,86 @@ class WorkflowRunRequest(BaseModel):
         return self
 
 
+class PublicWorkflowRunRequest(BaseModel):
+    """Request schema for ``POST /api/v2/workflows/public``.
+
+    Narrower than ``WorkflowRunRequest`` so the public-flow surface stays
+    locked down. Notably absent vs the regular body:
+
+    - ``data`` — visitors must never override the stored flow definition.
+    - ``tweaks`` — visitors must never override component parameters.
+
+    The endpoint enforces the additional CVE mitigations that the regular
+    endpoint does not need:
+
+    - ``access_type == PUBLIC`` gate (others 403).
+    - ``virtual_flow_id = uuid5(identifier, flow_id)`` so messages stay
+      isolated per visitor.
+    - Session string namespaced under the virtual flow id
+      (CVE-2026-33017).
+    - File-path validation (GHSA-rcjh-r59h-gq37).
+    - Owner impersonation: the run executes under the flow owner's
+      permissions, never the visitor's.
+    """
+
+    flow_id: str = Field(..., description="UUID of the public flow to run.")
+    input_value: str = Field("", description="Chat-style input value.")
+    session_id: str | None = Field(
+        None,
+        description=("Optional caller session. Always namespaced under the visitor's virtual flow id by the endpoint."),
+    )
+    mode: Literal[WorkflowMode.STREAM] = Field(
+        WorkflowMode.STREAM,
+        description=(
+            "Always ``stream``. Sync/background modes would widen the public "
+            "attack surface (job polling, owner impersonation persists across "
+            "queue boundaries) so the schema rejects them at the wire."
+        ),
+    )
+    stream_protocol: str = Field(
+        "langflow",
+        description=(
+            "Wire protocol for streaming events. Defaults to ``langflow`` "
+            "(raw EventManager payloads). ``agui`` emits AG-UI events. Unknown "
+            "values return 422 with the available list."
+        ),
+    )
+    files: list[str] | None = Field(
+        None,
+        description=(
+            "Optional list of pre-uploaded file paths. Each path must be "
+            "scoped to this flow's own storage namespace; the endpoint "
+            "rejects path traversal or cross-flow references."
+        ),
+    )
+    start_component_id: str | None = Field(None, description="Partial-run start component id.")
+    stop_component_id: str | None = Field(None, description="Partial-run stop component id.")
+
+    model_config = ConfigDict(
+        extra="forbid",
+        json_schema_extra={
+            "examples": [
+                {
+                    "flow_id": "67ccd2be-17f0-8190-81ff-3bb2cf6508e6",
+                    "input_value": "Hello from the shareable playground",
+                },
+                {
+                    "flow_id": "67ccd2be-17f0-8190-81ff-3bb2cf6508e6",
+                    "input_value": "Stream the response",
+                    "stream_protocol": "agui",
+                    "session_id": "thread-A",
+                },
+            ],
+        },
+    )
+
+    @model_validator(mode="after")
+    def validate_flow_id(self) -> PublicWorkflowRunRequest:
+        """Reject non-UUID ``flow_id`` early so the endpoint can trust it."""
+        uuid_validator(self.flow_id, message="Invalid flow_id, must be a UUID")
+        return self
+
+
 class WorkflowExecutionResponse(BaseModel):
     """Synchronous workflow execution response."""
 

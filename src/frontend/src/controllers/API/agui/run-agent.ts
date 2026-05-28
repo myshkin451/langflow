@@ -43,10 +43,27 @@ export interface WorkflowRunOptions {
   flowData?: { nodes: unknown[]; edges: unknown[] };
   /** Runtime file references the graph build needs (e.g. uploaded file paths). */
   files?: string[];
+  /**
+   * When true, route the request to the public-flow endpoint
+   * (``/api/v2/workflows/public``) instead of the authenticated one.
+   *
+   * Set by the shareable-playground popup so the backend can apply the
+   * public-access mitigations (per-visitor virtual_flow_id, session
+   * namespacing, file-path validation, owner impersonation) that mirror
+   * v1's ``build_public_tmp``.
+   *
+   * When enabled the request body is narrowed too: ``tweaks`` and
+   * ``flowData`` are silently dropped because the public schema forbids
+   * them (visitors must never override the stored flow definition).
+   */
+  usePublicEndpoint?: boolean;
 }
 
 /** The v2 workflows endpoint path. */
 export const WORKFLOWS_ENDPOINT = "/api/v2/workflows";
+
+/** The v2 public workflows endpoint path (shareable playground). */
+export const WORKFLOWS_PUBLIC_ENDPOINT = "/api/v2/workflows/public";
 
 /**
  * Wire shape for `POST /api/v2/workflows`. Mirrors
@@ -98,10 +115,14 @@ export function buildWorkflowRunRequest(
     stream_protocol: "agui",
   };
   if (opts.threadId) body.session_id = opts.threadId;
-  if (opts.tweaks) body.tweaks = opts.tweaks;
+  // The public endpoint's schema (extra="forbid") rejects tweaks/data:
+  // visitors must never override the stored flow definition. Drop them
+  // here instead of letting the request fail with a 422.
+  const isPublic = !!opts.usePublicEndpoint;
+  if (!isPublic && opts.tweaks) body.tweaks = opts.tweaks;
   if (opts.startComponentId) body.start_component_id = opts.startComponentId;
   if (opts.stopComponentId) body.stop_component_id = opts.stopComponentId;
-  if (opts.flowData) body.data = opts.flowData;
+  if (!isPublic && opts.flowData) body.data = opts.flowData;
   if (opts.files && opts.files.length > 0) body.files = opts.files;
   return body;
 }
