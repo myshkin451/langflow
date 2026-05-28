@@ -7,6 +7,7 @@ import SimplifiedCodeTabComponent from "@/components/core/codeTabsComponent";
 import type { JSONValue } from "@/types/chat";
 import { extractLanguage, isCodeBlock } from "@/utils/codeBlockUtils";
 import { cn } from "@/utils/utils";
+import { ToolSection } from "./ToolSection";
 import {
   isToolMessageEnvelope,
   looksPreformatted,
@@ -77,7 +78,7 @@ function FormattedOutput({ value }: { value: JSONValue }) {
   }
 }
 
-type Tab = "content" | "metadata";
+type Tab = "result" | "metadata";
 
 /** Tab control sized for the inside of a tool-call card. Matches the
  * underline-on-active pattern used across assistant-ui / Claude /
@@ -111,24 +112,28 @@ function TabButton({
   );
 }
 
-/** Top-level renderer for a tool's output. Routes by shape:
+/** Top-level renderer for a tool's output, wrapped in an "Output"
+ * eyebrow so the section is unambiguous next to the "Arguments" block
+ * above it. Routes by shape:
  *   - LangChain ToolMessage envelope with non-standard metadata keys
  *     (additional_kwargs, response_metadata, artifact, type, ...) gets
- *     a 2-tab UI: "Content" shows the inner `.content` rendered through
+ *     a 2-tab UI: "Result" shows the inner `.content` rendered through
  *     FormattedOutput, "Metadata" shows the rest of the envelope as
  *     pretty JSON. Plumbing keys (name, id, tool_call_id, status) are
  *     suppressed because the accordion trigger already surfaces them.
  *   - Anything else (simple string, plain dict, unwrappable envelope)
- *     falls through to FormattedOutput directly — no tabs, no chrome,
- *     just the body. */
+ *     falls through to FormattedOutput directly under the eyebrow —
+ *     no tabs, just the body. */
 export function ToolOutputDisplay({ output }: { output: JSONValue }) {
-  const [tab, setTab] = useState<Tab>("content");
+  const [tab, setTab] = useState<Tab>("result");
 
   if (!isToolMessageEnvelope(output)) {
     return (
-      <div className="max-h-96 overflow-auto">
-        <FormattedOutput value={unwrapToolMessage(output)} />
-      </div>
+      <ToolSection eyebrow="Output">
+        <div className="max-h-96 overflow-auto">
+          <FormattedOutput value={unwrapToolMessage(output)} />
+        </div>
+      </ToolSection>
     );
   }
 
@@ -148,17 +153,18 @@ export function ToolOutputDisplay({ output }: { output: JSONValue }) {
   // If after stripping plumbing there's no meaningful metadata left,
   // drop the tabs and render content directly.
   if (!hasMetadata) {
-    return <FormattedOutput value={content} />;
+    return (
+      <ToolSection eyebrow="Output">
+        <FormattedOutput value={content} />
+      </ToolSection>
+    );
   }
 
   return (
-    <div className="flex flex-col gap-2">
+    <ToolSection eyebrow="Output">
       <div role="tablist" className="flex gap-4 border-b border-border">
-        <TabButton
-          selected={tab === "content"}
-          onClick={() => setTab("content")}
-        >
-          Content
+        <TabButton selected={tab === "result"} onClick={() => setTab("result")}>
+          Result
         </TabButton>
         <TabButton
           selected={tab === "metadata"}
@@ -168,7 +174,7 @@ export function ToolOutputDisplay({ output }: { output: JSONValue }) {
         </TabButton>
       </div>
       {/* Stable height envelope: min-h holds the card chrome steady when
-       * switching from a short Content tab to a tall Metadata tab (and
+       * switching from a short Result tab to a tall Metadata tab (and
        * vice versa), and max-h caps growth so tall metadata scrolls
        * inside instead of pushing everything below the card down.
        * AnimatePresence mode="wait" lets the outgoing tab finish fading
@@ -183,7 +189,7 @@ export function ToolOutputDisplay({ output }: { output: JSONValue }) {
             exit={{ opacity: 0 }}
             transition={{ duration: 0.08, ease: "easeOut" }}
           >
-            {tab === "content" ? (
+            {tab === "result" ? (
               <FormattedOutput value={content} />
             ) : (
               <SimplifiedCodeTabComponent
@@ -194,7 +200,7 @@ export function ToolOutputDisplay({ output }: { output: JSONValue }) {
           </motion.div>
         </AnimatePresence>
       </div>
-    </div>
+    </ToolSection>
   );
 }
 

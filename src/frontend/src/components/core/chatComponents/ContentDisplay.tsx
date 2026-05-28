@@ -11,6 +11,7 @@ import SimplifiedCodeTabComponent from "../codeTabsComponent";
 import DurationDisplay from "./DurationDisplay";
 import { SourcesStrip } from "./SourcesStrip";
 import { ToolOutputDisplay } from "./ToolOutputDisplay";
+import { ToolSection } from "./ToolSection";
 
 export default function ContentDisplay({
   content,
@@ -167,18 +168,24 @@ export default function ContentDisplay({
       const showSeparator = hasInput && (hasOutput || hasError);
       contentData = (
         <div className="flex flex-col gap-3">
-          {hasInput && <ToolInputDisplay input={toolInput} />}
+          {hasInput && (
+            <ToolSection eyebrow="Arguments">
+              <ToolInputDisplay input={toolInput} />
+            </ToolSection>
+          )}
           {showSeparator && <div className="h-px bg-border" />}
           {hasOutput && (
             <ToolOutputDisplay output={content.output as JSONValue} />
           )}
           {hasError && (
-            <div className="rounded-md bg-destructive/10 text-destructive">
-              <SimplifiedCodeTabComponent
-                language="json"
-                code={JSON.stringify(content.error, null, 2)}
-              />
-            </div>
+            <ToolSection eyebrow="Error">
+              <div className="rounded-md bg-destructive/10 text-destructive">
+                <SimplifiedCodeTabComponent
+                  language="json"
+                  code={JSON.stringify(content.error, null, 2)}
+                />
+              </div>
+            </ToolSection>
           )}
         </div>
       );

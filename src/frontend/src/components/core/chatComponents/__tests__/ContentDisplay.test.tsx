@@ -299,12 +299,12 @@ describe("ContentDisplay", () => {
       render(<ContentDisplay content={tool} chatId="t-t-tabs" />);
       const tabs = screen.getAllByRole("tab");
       expect(tabs).toHaveLength(2);
-      expect(tabs[0]).toHaveTextContent("Content");
+      expect(tabs[0]).toHaveTextContent("Result");
       expect(tabs[1]).toHaveTextContent("Metadata");
-      // Content tab is the default selection.
+      // Result tab is the default selection.
       expect(tabs[0]).toHaveAttribute("aria-selected", "true");
       expect(tabs[1]).toHaveAttribute("aria-selected", "false");
-      // Body of the Content tab renders the inner string, not a JSON dump.
+      // Body of the Result tab renders the inner string, not a JSON dump.
       expect(screen.getByText("the body")).toBeInTheDocument();
     });
 
