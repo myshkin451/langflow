@@ -287,7 +287,7 @@ class AgentComponent(ToolCallingAgentComponent):
             name="stream",
             display_name="Stream",
             info=STREAM_INFO_TEXT,
-            value=False,
+            value=True,
             advanced=True,
         ),
         BoolInput(

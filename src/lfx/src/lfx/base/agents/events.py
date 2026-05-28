@@ -7,7 +7,7 @@ from typing import Any, Protocol
 from langchain_core.agents import AgentFinish
 from langchain_core.messages import AIMessageChunk
 
-from lfx.schema.content_types import ToolContent
+from lfx.schema.content_types import TextContent, ToolContent
 from lfx.schema.log import OnTokenFunctionType, SendMessageFunctionType
 from lfx.schema.message import Message
 
@@ -128,11 +128,16 @@ async def handle_on_chain_end(
     if data_output and isinstance(data_output, AgentFinish) and data_output.return_values.get("output"):
         output = data_output.return_values.get("output")
 
-        # Assigning to `message.text` triggers the setter, which appends a
-        # TextContent at the end of content_blocks. No need to push a
-        # synthetic "Output" TextContent ourselves -- doing so would
-        # duplicate the final text.
-        agent_message.text = _extract_output_text(output)
+        # Don't reassign agent_message.text here. The setter drops every
+        # existing TextContent and appends a single one at the end, which
+        # would collapse the interleaved text + tool_use blocks the
+        # on_chat_model_end handler appends in producer order. The text
+        # for the final round is already in content_blocks, and Message.text
+        # is a computed_field over those TextContent entries — getting
+        # the answer back out is automatic. Stash the extracted string in
+        # data["text"] so legacy consumers reading message.data["text"]
+        # still see the final answer.
+        agent_message.data[agent_message.text_key] = _extract_output_text(output) or ""
         agent_message.properties.state = "complete"
 
         # Only send final message if we didn't have streaming chunks
@@ -143,6 +148,94 @@ async def handle_on_chain_end(
     return agent_message, start_time
 
 
+def _coerce_ai_message_blocks(content: Any) -> list[dict[str, Any]]:
+    """Normalise an AIMessage.content into a list[dict] of typed blocks.
+
+    Anthropic emits ``content`` as ``list[dict]`` where each dict has a
+    ``type`` of ``"text"`` / ``"tool_use"`` / ``"input_json_delta"`` /
+    etc. OpenAI-style providers emit ``content`` as a plain string for
+    text-only turns and surface tool calls separately on ``.tool_calls``.
+
+    Return shape is always ``list[{"type": ..., ...}]`` so the caller
+    walks one structure. Text-only strings turn into a single
+    ``{"type": "text", "text": str}``. Anything we don't recognise is
+    skipped — the on_tool_start fallback in handle_on_tool_start will
+    still pick up tool calls if a provider routes them outside .content.
+    """
+    if isinstance(content, str):
+        return [{"type": "text", "text": content}] if content else []
+    if not isinstance(content, list):
+        return []
+    return [item for item in content if isinstance(item, dict) and item.get("type") in {"text", "tool_use"}]
+
+
+async def handle_on_chat_model_end(
+    event: dict[str, Any],
+    agent_message: Message,
+    send_message_callback: SendMessageFunctionType,
+    send_token_callback: OnTokenFunctionType | None,  # noqa: ARG001
+    start_time: float,
+    *,
+    had_streaming: bool = False,  # noqa: ARG001
+    message_id: str | None = None,  # noqa: ARG001
+) -> tuple[Message, float]:
+    """Append the just-completed AIMessage's text + tool_use blocks in order.
+
+    Claude's tool-calling pattern is to emit a single AIMessage per agent
+    turn with mixed content: ``[text "Let me check", tool_use A, text
+    "Now compute", tool_use B]``. The model has already decided the
+    interleaving order. Walk the content list and append each piece to
+    ``content_blocks`` chronologically so the renderer can show the
+    narration before each tool call instead of one summary paragraph at
+    the end.
+
+    Tool calls land here with ``output=None``; handle_on_tool_end fills
+    them in once the tool actually returns. handle_on_tool_start sees the
+    pre-populated ToolContent and skips its own append (dedup by name +
+    tool_input + output is None), so providers that don't fire
+    on_chat_model_end (or route tool calls outside .content) still get
+    their ToolContent appended via the fallback.
+    """
+    output = event["data"].get("output")
+    if not output or not hasattr(output, "content"):
+        return agent_message, start_time
+
+    blocks = _coerce_ai_message_blocks(output.content)
+    if not blocks:
+        return agent_message, start_time
+
+    if agent_message.content_blocks is None:
+        agent_message.content_blocks = []
+
+    duration = _calculate_duration(start_time)
+    appended = False
+    for item in blocks:
+        item_type = item.get("type")
+        if item_type == "text":
+            text = item.get("text") or ""
+            if not text:
+                continue
+            agent_message.content_blocks.append(TextContent(type="text", text=text, duration=duration))
+            appended = True
+        elif item_type == "tool_use":
+            agent_message.content_blocks.append(
+                ToolContent(
+                    type="tool_use",
+                    name=item.get("name"),
+                    tool_input=item.get("input") or {},
+                    output=None,
+                    error=None,
+                    header={"title": f"Accessing **{item.get('name')}**", "icon": "Hammer"},
+                    duration=duration,
+                )
+            )
+            appended = True
+
+    if appended:
+        agent_message = await send_message_callback(message=agent_message, skip_db_update=True)
+    return agent_message, perf_counter()
+
+
 async def handle_on_tool_start(
     event: dict[str, Any],
     agent_message: Message,
@@ -150,18 +243,61 @@ async def handle_on_tool_start(
     send_message_callback: SendMessageFunctionType,
     start_time: float,
 ) -> tuple[Message, float]:
+    """Bind the run_id to the ToolContent the model already emitted.
+
+    handle_on_chat_model_end has typically already appended a ToolContent
+    for this tool_use (with output=None) in the right interleaved
+    position. We just need to find it and key it in tool_blocks_map so
+    handle_on_tool_end can locate it via run_id.
+
+    Match by ``name`` + ``output is None`` + "not yet bound". The
+    tool_use block emitted by on_chat_model_end has an empty
+    ``tool_input`` because the model streams the JSON args separately
+    (as ``input_json_delta`` chunks accumulated by the runtime, not
+    captured in our handler's snapshot); the real input only arrives
+    here via on_tool_start. So match by name + unbound + waiting, then
+    overwrite tool_input with what we receive now.
+
+    Fallback: if no matching ToolContent is found (provider routed tool
+    calls outside .content, or on_chat_model_end never fired), append
+    one ourselves so the tool still has a block — order will be best-
+    effort but the call won't be dropped.
+    """
     tool_name = event["name"]
-    tool_input = event["data"].get("input")
+    tool_input = event["data"].get("input") or {}
     run_id = event.get("run_id", "")
     tool_key = f"{tool_name}_{run_id}"
 
     if agent_message.content_blocks is None:
         agent_message.content_blocks = []
 
-    duration = _calculate_duration(start_time)
-    new_start_time = perf_counter()  # Get new start time for next operation
+    # Look for the ToolContent the model-end handler should have placed.
+    # Skip any that handle_on_tool_start has already bound for an earlier
+    # parallel call to the same tool, so each on_tool_start picks the
+    # next unbound block in declaration order.
+    bound_block_ids = {id(v) for v in tool_blocks_map.values()}
+    existing = None
+    for block in agent_message.content_blocks:
+        if (
+            isinstance(block, ToolContent)
+            and block.name == tool_name
+            and block.output is None
+            and id(block) not in bound_block_ids
+        ):
+            existing = block
+            break
 
-    # Create new tool content with the input exactly as received
+    if existing is not None:
+        # Overwrite tool_input with the real, accumulated args (the
+        # model-end snapshot had {} because JSON-delta chunks land
+        # later).
+        existing.tool_input = tool_input
+        tool_blocks_map[tool_key] = existing
+        return agent_message, perf_counter()
+
+    # Fallback path — append the ToolContent ourselves.
+    duration = _calculate_duration(start_time)
+    new_start_time = perf_counter()
     tool_content = ToolContent(
         type="tool_use",
         name=tool_name,
@@ -169,17 +305,11 @@ async def handle_on_tool_start(
         output=None,
         error=None,
         header={"title": f"Accessing **{tool_name}**", "icon": "Hammer"},
-        duration=duration,  # Store the actual duration
+        duration=duration,
     )
-
-    # Append flat into the chronological content_blocks list and remember the
-    # reference for handle_on_tool_end to update once the tool returns.
     tool_blocks_map[tool_key] = tool_content
     agent_message.content_blocks.append(tool_content)
-
     agent_message = await send_message_callback(message=agent_message, skip_db_update=True)
-    # Re-anchor the map to the persisted instance (send_message_callback may
-    # have copied the message; the appended ToolContent is the last item).
     if agent_message.content_blocks and isinstance(agent_message.content_blocks[-1], ToolContent):
         tool_blocks_map[tool_key] = agent_message.content_blocks[-1]
     return agent_message, new_start_time
@@ -325,6 +455,11 @@ CHAIN_EVENT_HANDLERS: dict[str, ChainEventHandler] = {
     "on_chain_end": handle_on_chain_end,
     "on_chain_stream": handle_on_chain_stream,
     "on_chat_model_stream": handle_on_chain_stream,
+    # Per-round AIMessage. Fires after each on_chat_model_stream burst
+    # and before the matching on_tool_start. Walks .content for the
+    # interleaved text + tool_use the model emitted and appends them
+    # to content_blocks in producer order.
+    "on_chat_model_end": handle_on_chat_model_end,
 }
 
 TOOL_EVENT_HANDLERS: dict[str, ToolEventHandler] = {
