@@ -317,3 +317,65 @@ async def test_public_endpoint_rejects_missing_client_id(client: AsyncClient, pu
         headers={"Content-Type": "application/json"},
     )
     assert response.status_code == codes.BAD_REQUEST
+
+
+@pytest.mark.benchmark
+@pytest.mark.security
+async def test_public_endpoint_sanitizes_component_validation_error(client: AsyncClient, public_flow_id, monkeypatch):
+    """``CustomComponentValidationError`` must not leak blocked class names to anonymous visitors.
+
+    Mirrors v1 ``build_public_tmp``: the raw error message embeds the
+    disabled component class names, which is enumeration of the owner's
+    flow internals through a public surface. Surface a sanitized 400.
+    """
+    from lfx.utils.flow_validation import CustomComponentValidationError
+
+    raw_message = "Flow build blocked: custom components are not allowed: SecretInternalComponent"
+
+    def _raise(*_args, **_kwargs):
+        raise CustomComponentValidationError(raw_message)
+
+    import langflow.api.v2.workflow_public as workflow_public_module
+
+    monkeypatch.setattr(workflow_public_module, "validate_flow_for_current_settings", _raise)
+
+    _send_unauthenticated(client, "component-validation-client")
+    response = await client.post(
+        "api/v2/workflows/public",
+        json={"flow_id": str(public_flow_id), "input_value": "Hi"},
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == codes.BAD_REQUEST
+    detail = response.json().get("detail", "")
+    assert detail == "This flow cannot be executed."
+    assert "SecretInternalComponent" not in detail
+    assert raw_message not in response.text
+
+
+@pytest.mark.benchmark
+@pytest.mark.security
+async def test_public_endpoint_surfaces_value_error_as_400(client: AsyncClient, public_flow_id, monkeypatch):
+    """Other ``ValueError``s from the gate sequence become 400 with the message preserved.
+
+    Mirrors v1 ``build_public_tmp``'s ``except ValueError -> HTTP 400``.
+    Without the wrapper the same path returns a 500 with a stack trace.
+    """
+    import langflow.api.v2.workflow_public as workflow_public_module
+
+    gate_error_message = "custom gate failure"
+
+    def _raise(*_args, **_kwargs):
+        raise ValueError(gate_error_message)
+
+    monkeypatch.setattr(workflow_public_module, "validate_flow_for_current_settings", _raise)
+
+    _send_unauthenticated(client, "value-error-client")
+    response = await client.post(
+        "api/v2/workflows/public",
+        json={"flow_id": str(public_flow_id), "input_value": "Hi"},
+        headers={"Content-Type": "application/json"},
+    )
+
+    assert response.status_code == codes.BAD_REQUEST
+    assert response.json().get("detail") == "custom gate failure"

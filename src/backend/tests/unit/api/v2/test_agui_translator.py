@@ -166,6 +166,34 @@ def test_token_for_already_ended_message_id_is_dropped():
     )
 
 
+def test_token_after_boundary_close_is_dropped():
+    """An interleaved token sequence ``A, B, A`` must not re-open id A.
+
+    Switching from id A to id B closes A through ``_close_open_message``. A
+    later token for A used to slip past the dedup guard because
+    ``_close_open_message`` was the only finalizer that did not record the
+    closed id in ``_emitted_text_message_ids``. The translator must treat a
+    token-boundary close the same way it treats an ``add_message`` close.
+    """
+    t = AGUITranslator(run_id="r1", thread_id="t1")
+    t.start()
+
+    a1 = t.translate("token", {"chunk": "hi", "id": "m1"})
+    assert any(isinstance(e, TextMessageStartEvent) and e.message_id == "m1" for e in a1)
+
+    # Switching to a new id closes m1 via _close_open_message.
+    b = t.translate("token", {"chunk": "yo", "id": "m2"})
+    assert any(isinstance(e, TextMessageEndEvent) and e.message_id == "m1" for e in b)
+    assert any(isinstance(e, TextMessageStartEvent) and e.message_id == "m2" for e in b)
+
+    # A late token for m1 must be dropped, not re-open the ended message.
+    late = t.translate("token", {"chunk": "again", "id": "m1"})
+    assert all(not isinstance(e, TextMessageStartEvent) for e in late), (
+        f"Token boundary did not mark m1 as ended; emitted: {late}"
+    )
+    assert late == [], f"Expected no events for late token after boundary close; got {late}"
+
+
 def test_vertices_sorted_emits_state_snapshot_of_all_nodes():
     t = AGUITranslator(run_id="r1", thread_id="t1")
     t.start()

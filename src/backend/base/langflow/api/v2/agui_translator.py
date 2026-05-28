@@ -286,9 +286,17 @@ class AGUITranslator:
         return {"op": "add", "path": f"/nodes/{node_id}", "value": {"status": status, "output": output}}
 
     def _close_open_message(self) -> list[BaseEvent]:
-        """Emit ``TEXT_MESSAGE_END`` for the open message, if any."""
+        """Emit ``TEXT_MESSAGE_END`` for the open message, if any.
+
+        The closed id is recorded in ``_emitted_text_message_ids`` so a later
+        token (e.g. an interleaved ``A, B, A`` sequence) cannot re-open it
+        and emit a second ``TEXT_MESSAGE_START`` for an id the protocol
+        already considers closed.
+        """
         if self._open_message_id is None:
             return []
-        end = TextMessageEndEvent(message_id=self._open_message_id)
+        closed_id = self._open_message_id
+        end = TextMessageEndEvent(message_id=closed_id)
+        self._emitted_text_message_ids.add(closed_id)
         self._open_message_id = None
         return [end]

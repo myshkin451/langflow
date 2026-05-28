@@ -29,13 +29,13 @@ from collections.abc import AsyncIterator
 from typing import Annotated
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, BackgroundTasks, Depends, Request
+from fastapi import APIRouter, BackgroundTasks, Depends, HTTPException, Request, status
 from fastapi.responses import EventSourceResponse
 from lfx.schema.workflow import (
     WORKFLOW_EXECUTION_RESPONSES,
     PublicWorkflowRunRequest,
 )
-from lfx.utils.flow_validation import validate_flow_for_current_settings
+from lfx.utils.flow_validation import CustomComponentValidationError, validate_flow_for_current_settings
 
 from langflow.api.utils.flow_utils import (
     scope_session_to_namespace,
@@ -86,37 +86,50 @@ async def execute_public_workflow(
 
     real_flow_id = UUID(request.flow_id)
 
-    # File path validation — done before any DB lookup so malformed
-    # requests fail fast and don't touch the database (GHSA-rcjh-r59h-gq37).
-    validate_public_files(request.files, real_flow_id)
+    # Mirror v1 ``build_public_tmp`` error contract: blocked-component
+    # validation must surface as a sanitized 400 (the raw message names
+    # the disabled component classes); other ValueErrors from the gate
+    # sequence become 400 with the message preserved.
+    try:
+        # File path validation — done before any DB lookup so malformed
+        # requests fail fast and don't touch the database (GHSA-rcjh-r59h-gq37).
+        validate_public_files(request.files, real_flow_id)
 
-    # Identifier resolution. The frontend's ``useGetFlowId`` uses
-    # ``client_id`` for the UUID v5 derivation when AUTO_LOGIN is on,
-    # so the backend must match here or the popup's chat-view filter
-    # would drop every broadcast message.
-    client_id = http_request.cookies.get("client_id")
-    auth_settings = get_settings_service().auth_settings
-    authenticated_user_id = authenticated_user.id if authenticated_user and not auth_settings.AUTO_LOGIN else None
+        # Identifier resolution. The frontend's ``useGetFlowId`` uses
+        # ``client_id`` for the UUID v5 derivation when AUTO_LOGIN is on,
+        # so the backend must match here or the popup's chat-view filter
+        # would drop every broadcast message.
+        client_id = http_request.cookies.get("client_id")
+        auth_settings = get_settings_service().auth_settings
+        authenticated_user_id = authenticated_user.id if authenticated_user and not auth_settings.AUTO_LOGIN else None
 
-    # access_type == PUBLIC + virtual_flow_id, run as the flow owner.
-    owner_user, virtual_flow_id = await verify_public_flow_and_get_user(
-        flow_id=real_flow_id,
-        client_id=client_id,
-        authenticated_user_id=authenticated_user_id,
-    )
+        # access_type == PUBLIC + virtual_flow_id, run as the flow owner.
+        owner_user, virtual_flow_id = await verify_public_flow_and_get_user(
+            flow_id=real_flow_id,
+            client_id=client_id,
+            authenticated_user_id=authenticated_user_id,
+        )
 
-    # Defends CVE-2026-33017: scope caller's session into the (identifier, flow_id) namespace.
-    scoped_session = (
-        scope_session_to_namespace(request.session_id, str(virtual_flow_id)) if request.session_id is not None else None
-    )
+        # Defends CVE-2026-33017: scope caller's session into the (identifier, flow_id) namespace.
+        scoped_session = (
+            scope_session_to_namespace(request.session_id, str(virtual_flow_id))
+            if request.session_id is not None
+            else None
+        )
 
-    # Validate stored flow data after the public-access gate so private
-    # flows never trigger validation side effects.
-    async with session_scope() as session:
-        flow = await session.get(Flow, real_flow_id)
-        if flow and flow.data:
-            validate_flow_for_current_settings(flow.data)
-        flow_name = flow.name if flow else None
+        # Validate stored flow data after the public-access gate so private
+        # flows never trigger validation side effects.
+        async with session_scope() as session:
+            flow = await session.get(Flow, real_flow_id)
+            if flow and flow.data:
+                validate_flow_for_current_settings(flow.data)
+            flow_name = flow.name if flow else None
+    except CustomComponentValidationError as exc:
+        # The raw message embeds the blocked component class names; do
+        # not leak it to an anonymous visitor.
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="This flow cannot be executed.") from exc
+    except ValueError as exc:
+        raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail=str(exc)) from exc
 
     if request.stream_protocol not in STREAM_ADAPTERS:
         raise _unknown_protocol_http_exception(
