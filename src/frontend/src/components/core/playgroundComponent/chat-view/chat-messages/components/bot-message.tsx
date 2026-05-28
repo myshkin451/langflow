@@ -128,6 +128,14 @@ export const BotMessage = memo(
         ? persistedDuration
         : liveDisplayTime;
 
+    // A message with token usage should still surface the MessageMetadata
+    // pill even when no duration was recorded (e.g. v2 runs that didn't
+    // emit ``build_duration``, historical messages restored from DB).
+    // Without this the user would never see "X tokens" for those.
+    const totalTokens = chat.properties?.usage?.total_tokens;
+    const hasUsage = typeof totalTokens === "number" && totalTokens > 0;
+    const showMetadata = displayTime > 0 || hasUsage;
+
     // The renderer is data-driven, but content_blocks shows up in two
     // shapes:
     //   - Legacy: an "Agent Steps" group wraps the tool calls (and the
@@ -196,13 +204,15 @@ export const BotMessage = memo(
                       <span>
                         {t("chat.runningStatus")} {formatSeconds(displayTime)}
                       </span>
-                    ) : !thinkingActive && displayTime > 0 ? (
+                    ) : !thinkingActive && showMetadata ? (
                       <>
-                        <span className="text-muted-foreground">
-                          {t("chat.finishedIn")}
-                        </span>
+                        {displayTime > 0 && (
+                          <span className="text-muted-foreground">
+                            {t("chat.finishedIn")}
+                          </span>
+                        )}
                         <MessageMetadata
-                          duration={displayTime}
+                          duration={displayTime > 0 ? displayTime : undefined}
                           usage={chat.properties?.usage ?? undefined}
                           timestamp={chat.timestamp}
                         />
