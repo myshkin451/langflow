@@ -160,11 +160,11 @@ export default function ContentDisplay({
         content.output !== null &&
         !(typeof content.output === "string" && content.output.trim() === "");
       const hasError = content.error != null;
-      // Eyebrow labels (INPUT/OUTPUT/ERROR) used to bracket each section,
-      // but the surrounding accordion card is already the "tool call"
-      // context — extra labels just add chrome. Match the assistant-ui /
-      // Claude pattern: args and result stack directly inside the card,
-      // separated by a hairline rule. Empty sections render nothing.
+      // Each section carries an eyebrow label (Arguments / Error) so the
+      // parts of a tool call read clearly inside the accordion card. The
+      // output section renders through ToolOutputDisplay, which supplies its
+      // own Result/Metadata tabs, and a hairline rule separates the input
+      // from the result. Empty sections render nothing.
       const showSeparator = hasInput && (hasOutput || hasError);
       contentData = (
         <div className="flex flex-col gap-3">

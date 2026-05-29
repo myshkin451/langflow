@@ -290,8 +290,11 @@ async def handle_on_tool_start(
     if existing is not None:
         # Overwrite tool_input with the real, accumulated args (the
         # model-end snapshot had {} because JSON-delta chunks land
-        # later).
-        existing.tool_input = tool_input
+        # later). But only when on_tool_start actually carries input —
+        # providers that already populated the model-end block's
+        # tool_input (non-streaming Anthropic) fire on_tool_start with an
+        # empty payload, and clobbering with {} would lose the real args.
+        existing.tool_input = tool_input or existing.tool_input
         tool_blocks_map[tool_key] = existing
         return agent_message, perf_counter()
 
@@ -396,7 +399,14 @@ async def handle_on_chain_stream(
     if isinstance(data_chunk, dict) and data_chunk.get("output"):
         output = data_chunk.get("output")
         if output and isinstance(output, str | list):
-            agent_message.text = _extract_output_text(output)
+            # Don't use the Message.text setter here. Like handle_on_chain_end,
+            # the setter drops every existing TextContent and appends one at the
+            # end, which collapses the interleaved text + tool_use blocks
+            # on_chat_model_end appended in producer order. ALTK / legacy
+            # AgentExecutor paths reach this branch via on_chain_stream. Stash
+            # the extracted string in data[text_key] so legacy consumers still
+            # read it while content_blocks stays the source of truth.
+            agent_message.data[agent_message.text_key] = _extract_output_text(output) or ""
         agent_message.properties.state = "complete"
         # Don't call send_message_callback here - we must update in place
         # in order to keep the message id consistent throughout the stream.
