@@ -23,4 +23,5 @@ class ServiceType(str, Enum):
     MCP_COMPOSER_SERVICE = "mcp_composer_service"
     JOB_SERVICE = "jobs_service"
     FLOW_EVENTS_SERVICE = "flow_events_service"
+    FLOW_OPERATIONS_SERVICE = "flow_operations_service"
     MEMORY_BASE_SERVICE = "memory_base_service"
