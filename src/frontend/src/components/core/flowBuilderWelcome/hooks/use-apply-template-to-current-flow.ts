@@ -1,4 +1,9 @@
+import { cloneDeep } from "lodash";
 import { useCallback } from "react";
+import {
+  buildGraphDiffOperations,
+  buildInverseFlowOperations,
+} from "@/hooks/flows/flow-operation-diff";
 import useFlowStore from "@/stores/flowStore";
 import useFlowsManagerStore from "@/stores/flowsManagerStore";
 import {
@@ -27,8 +32,44 @@ export function useApplyTemplateToCurrentFlow() {
     (nameKey: StarterTemplateNameKey, onFitted?: () => void): boolean => {
       const template = findStarterTemplate(examples, nameKey);
       if (!template?.data) return false;
-      setNodes(template.data.nodes ?? []);
-      setEdges(template.data.edges ?? []);
+      const templateNodes = cloneDeep(template.data.nodes ?? []);
+      const templateEdges = cloneDeep(template.data.edges ?? []);
+      const flowStore = useFlowStore.getState();
+
+      if (
+        flowStore.collaborationOperationMode &&
+        flowStore.onCollaborationOperations
+      ) {
+        const previousNodes = flowStore.nodes;
+        const previousEdges = flowStore.edges;
+        const previousData = flowStore.currentFlow?.data as
+          | Record<string, unknown>
+          | undefined;
+        setNodes(templateNodes, { skipCollaborationEmit: true });
+        setEdges(templateEdges, { skipCollaborationEmit: true });
+        const operations = buildGraphDiffOperations(
+          previousNodes,
+          previousEdges,
+          templateNodes,
+          templateEdges,
+        );
+        if (operations.length > 0) {
+          flowStore.onCollaborationOperations(operations, {
+            historyEntry: {
+              forwardOps: cloneDeep(operations),
+              inverseOps: buildInverseFlowOperations(
+                previousNodes,
+                previousEdges,
+                previousData,
+                operations,
+              ),
+            },
+          });
+        }
+      } else {
+        setNodes(templateNodes);
+        setEdges(templateEdges);
+      }
       // Why this dance:
       //   1. ReactFlow can only compute the correct viewport AFTER the new
       //      nodes have rendered AND been measured — node widths/heights are

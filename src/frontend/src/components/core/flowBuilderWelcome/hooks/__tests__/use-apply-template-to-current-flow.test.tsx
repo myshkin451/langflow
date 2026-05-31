@@ -10,14 +10,22 @@ import { useApplyTemplateToCurrentFlow } from "../use-apply-template-to-current-
 
 const setNodes = jest.fn();
 const setEdges = jest.fn();
+const onCollaborationOperations = jest.fn();
+let flowStoreState: Record<string, unknown>;
 
 jest.mock("@/stores/flowStore", () => ({
   __esModule: true,
   default: jest.fn((selector?: (state: unknown) => unknown) => {
-    const state = { setNodes, setEdges };
-    return selector ? selector(state) : state;
+    return selector ? selector(flowStoreState) : flowStoreState;
   }),
 }));
+
+const mockedFlowStore = jest.requireMock("@/stores/flowStore")
+  .default as jest.Mock & {
+  getState: () => typeof flowStoreState;
+};
+
+mockedFlowStore.getState = () => flowStoreState;
 
 const fullExamples = [
   {
@@ -66,6 +74,19 @@ describe("useApplyTemplateToCurrentFlow", () => {
   beforeEach(() => {
     setNodes.mockClear();
     setEdges.mockClear();
+    onCollaborationOperations.mockClear();
+    flowStoreState = {
+      setNodes,
+      setEdges,
+      nodes: [],
+      edges: [],
+      currentFlow: {
+        id: "flow-1",
+        data: { nodes: [], edges: [] },
+      },
+      collaborationOperationMode: false,
+      onCollaborationOperations,
+    };
     setExamples(fullExamples);
   });
 
@@ -80,6 +101,43 @@ describe("useApplyTemplateToCurrentFlow", () => {
     expect(didApply).toBe(true);
     expect(setNodes).toHaveBeenCalledWith([{ id: "n1" }]);
     expect(setEdges).toHaveBeenCalledWith([{ id: "e1" }]);
+  });
+
+  it("should_emit_one_collaboration_batch_with_history_when_operation_mode_is_active", () => {
+    flowStoreState = {
+      ...flowStoreState,
+      collaborationOperationMode: true,
+    };
+    const { result } = renderHook(() => useApplyTemplateToCurrentFlow());
+
+    act(() => {
+      result.current("simple_agent");
+    });
+
+    expect(setNodes).toHaveBeenCalledWith([{ id: "n1" }], {
+      skipCollaborationEmit: true,
+    });
+    expect(setEdges).toHaveBeenCalledWith([{ id: "e1" }], {
+      skipCollaborationEmit: true,
+    });
+    expect(onCollaborationOperations).toHaveBeenCalledWith(
+      [
+        { type: "add_nodes", nodes: [{ id: "n1" }] },
+        { type: "add_edges", edges: [{ id: "e1" }] },
+      ],
+      {
+        historyEntry: {
+          forwardOps: [
+            { type: "add_nodes", nodes: [{ id: "n1" }] },
+            { type: "add_edges", edges: [{ id: "e1" }] },
+          ],
+          inverseOps: [
+            { type: "delete_edges", ids: ["e1"] },
+            { type: "delete_nodes", ids: ["n1"] },
+          ],
+        },
+      },
+    );
   });
 
   it("should_pick_the_correct_template_when_a_different_name_key_is_passed", () => {
